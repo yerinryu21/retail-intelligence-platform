@@ -26,7 +26,8 @@ def build_customer_features(df: pd.DataFrame,
     
     last_purchase = df.groupby('CustomerID')['InvoiceDate'].max().reset_index()
     last_purchase.columns = ['CustomerID', 'LastPurchaseDate']
-    last_purchase['Recency'] = (snapshot - last_purchase['LastPurchaseDate']).dt.days
+    last_purchase['Recency'] = (snapshot.normalize() - last_purchase['LastPurchaseDate'].dt.normalize()).dt.days
+    
     
     frequency = df.groupby('CustomerID')['InvoiceNo'].nunique().reset_index()
     frequency.columns = ['CustomerID', 'Frequency']
