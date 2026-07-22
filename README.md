@@ -300,3 +300,119 @@ Best cross-validated PR-AUC: 0.6118 (close to the 0.604 test-set PR-AUC, suggest
 | `models/churn_model_tuned.pkl` | Final production model |
 | `models/optimal_threshold.npy` | Selected decision threshold (0.20) |
 | `data/processed/churn_predictions.csv` | Per-customer predictions + CLV |
+
+
+
+## Week 3: SHAP Explainability + Risk Segmentation + Streamlit Tab 1
+
+### Overview
+
+Week 3 turned the Week 2 churn model into something explainable and actionable: 
+SHAP explainability at both the global and individual level, a 4-tier risk segmentation system with revenue-at-risk quantification, and a working Streamlit dashboard (Tab 1) tying it all together. Several real bugs were found and fixed  along the way — a SHAP/XGBoost version compatibility crash, two rounds of a risk-level inconsistency bug between different parts of the codebase, and a 
+SHAP-value indexing mismatch in the dashboard — plus one genuine analytical finding: the highest-probability churn segment is not the highest-priority segment for retention spend.
+
+
+**Pipeline:**
+
+churn_model_tuned.pkl (Week 2)
+        │
+        ▼
+Global SHAP Explainability
+(Day 1)
+        │
+        ▼
+Individual SHAP Explanations
+(Day 2)
+        │
+        ▼
+4-Tier Risk Segmentation
++ Revenue-at-Risk
+(Day 3)
+        │
+        ▼
+customer_risk_table.csv
+        │
+        ├──────────────┐
+        ▼              ▼
+Streamlit        Streamlit
+Layout           Charts
+(Day 4)          (Day 5)
+
+**Final outputs:** `models/shap_explainer.pkl`, `data/processed/feature_importance.csv`, 
+`data/processed/shap_values.csv`, `data/processed/customer_risk_table.csv`, 
+working `src/app.py` (Streamlit Tab 1: Churn Prediction)
+
+---
+
+### Day 1 — SHAP Global Explainability
+
+**File:** `src/module1_churn/shap_explainability.py`
+**Notebook:** `notebooks/10_shap_global_analysis.ipynb`
+
+Built `compute_shap_values()`, `plot_global_feature_importance()` (bar, beeswarm, heatmap), and `get_feature_importance_table()` using `shap.TreeExplainer` on the tuned XGBoost model.
+
+
+**Key finding:** `DaysActive` is the dominant churn driver (mean |SHAP| = 0.846), nearly 3x the next feature (`UniqueProducts`, 0.285). High `DaysActive` decreases churn risk (longer-tenured customers are stickier).
+
+**Surprising result:** `Frequency` and `AvgOrderValue` — the two "classic" RFM churn signals — ranked last (6th and 7th of 7). Investigated rather than accepted at face value: confirmed `Frequency` has real variance (not a broken feature, range 1–209), then found it correlates 0.739 with `UniqueProducts` (rank #2). 
+Conclusion: not a bug — `UniqueProducts` absorbs `Frequency`'s signal in the tree-based model, a known effect of correlated features in SHAP importance.
+
+---
+
+### Day 2 — SHAP Individual Customer Explanations
+
+**File:** `src/module1_churn/shap_explainability.py` (same file, extended)
+**Notebook:** `notebooks/11_individual_shap_explanations.ipynb`
+
+Built `explain_single_customer()` (waterfall plot + ranked driver/retention breakdown per customer) and generate_natural_language_explanation()` (template-based plain-English summary).
+
+
+**Limitation noted (addressed further in Day 3):** one-time/burst buyers (e.g. `DaysActive=1`, `Frequency=1`) get the same HIGH RISK flag and win-back treatment as lapsed regulars, despite likely needing different retention strategies.
+
+---
+
+### Day 3 — Risk Segmentation + Revenue at Risk
+
+**File:** `src/module1_churn/risk_segmentation.py`
+**Notebook:** `notebooks/12_risk_segmentation.ipynb`
+
+Built `assign_risk_tier()` and `build_customer_risk_table()` — full customer-level table combining churn probability, risk tier, CLV estimate (`Monetary × 1.2`), revenue at risk, top SHAP driver, and natural-language explanation per customer.
+
+**Enhancement — 4th tier added:** original 3 tiers (Low/Medium/High) left 55% of customers in one undifferentiated "High Risk" bucket. Added an `Extreme Risk` tier (probability ≥ 0.70) to enable finer prioritization. Required updating both `assign_risk_tier()` and `generate_natural_language_explanation()` in tandem to avoid reintroducing a tier-mismatch bug.
+
+**Key finding — probability ≠ priority:** directly compared Extreme Risk (n=75) against High Risk (n=359) across Frequency, DaysActive, and Monetary — Extreme Risk confirmed to be an almost uniform group of one-time, same-day buyers with the lowest revenue at risk of any tier despite the highest churn probability. High Risk, despite lower average probability, is a substantially more valuable population. **Practical implication:** retention spend is better directed at High and Medium Risk tiers; Extreme Risk customers are weak win-back candidates.
+
+---
+
+### Day 4 — Streamlit Tab 1: Layout + Data Tables
+
+**File:** `src/app.py`
+
+Built the dashboard skeleton: page config, sidebar navigation, KPI metrics row (5 columns for 4-tier system), filters (risk tier multiselect, probability slider, revenue minimum), customer risk table, and individual customer deep-dive section.
+
+
+---
+
+### Day 5 — Streamlit Tab 1: Charts + SHAP Visualizations
+
+**File:** `src/app.py` (extended)
+
+Added: risk tier donut chart, revenue-at-risk bar chart, churn probability histogram, global SHAP feature importance bar, DaysActive-vs-Monetary scatter,and a live per-customer SHAP driver bar chart tied to the deep-dive dropdown.
+
+
+---
+
+### Week 3 File Summary
+
+| File | Purpose |
+|---|---|
+| `src/module1_churn/shap_explainability.py` | Global + individual SHAP, natural language explanations |
+| `src/module1_churn/risk_segmentation.py` | 4-tier risk segmentation, CLV, revenue at risk |
+| `notebooks/10_shap_global_analysis.ipynb` | Global SHAP interpretation (Day 1) |
+| `notebooks/11_individual_shap_explanations.ipynb` | Individual SHAP testing, narrative bug fixes (Day 2) |
+| `notebooks/12_risk_segmentation.ipynb` | Risk tier analysis, Extreme vs High Risk comparison (Day 3) |
+| `src/app.py` | Streamlit Tab 1 — layout, filters, table, charts, deep dive (Days 4–5) |
+| `models/shap_explainer.pkl` | Saved SHAP TreeExplainer |
+| `data/processed/feature_importance.csv` | Global SHAP feature importance table |
+| `data/processed/shap_values.csv` | Per-customer SHAP values, original row order |
+| `data/processed/customer_risk_table.csv` | Full risk table with tiers, CLV, revenue at risk, `ShapRowIndex` |
