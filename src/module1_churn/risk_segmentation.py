@@ -52,6 +52,7 @@ def build_customer_risk_table() -> pd.DataFrame:
     
     # ── Build main table ───────────────────────────────────────────
     risk_table = X_test.copy().reset_index(drop=True)
+    risk_table['ShapRowIndex'] = risk_table.index  # preserve original position before any sorting/filtering happens
     risk_table['ChurnProbability'] = y_prob
     risk_table['PredictedChurn'] = y_pred
     risk_table['ActualChurn'] = y_test.reset_index(drop=True)
