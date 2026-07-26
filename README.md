@@ -416,3 +416,150 @@ Added: risk tier donut chart, revenue-at-risk bar chart, churn probability histo
 | `data/processed/feature_importance.csv` | Global SHAP feature importance table |
 | `data/processed/shap_values.csv` | Per-customer SHAP values, original row order |
 | `data/processed/customer_risk_table.csv` | Full risk table with tiers, CLV, revenue at risk, `ShapRowIndex` |
+
+
+## Week 4: Demand Forecasting (Prophet) + Uncertainty Quantification + Baseline Comparison
+
+### Overview
+
+Week 4 built the demand forecasting module for all 20 top products using Prophet. Five separate bugs were found and fixed across the week — an unstable yearly seasonality + holiday config, a weekly seasonality config that turned out to be modeling noise (all 
+training dates fell on the same weekday), a relative uncertainty metric hidden by zero-clipping, a stock/demand horizon mismatch, and a MAPE near-zero blowup — plus a custom data-quality flag added to separate genuinely forecastable products from sparse/spike-driven ones. The week closes with a full evaluation table and two products flagged for deeper investigation in Week 5's walk-forward validation.
+
+**Pipeline:**
+
+weekly_demand.csv (Week 1)
+        │
+        ▼
+Single-Product Prophet Fit
++ Config Debugging
+(Day 1)
+        │
+        ▼
+Multi-Product Pipeline
++ Data Quality Flag
+(Day 2)
+        │
+        ▼
+Uncertainty Quantification
++ Inventory Risk
+(Day 3)
+        │
+        ▼
+Naive + Seasonal Naive
+Baseline Comparison
+(Day 4)
+        │
+        ▼
+final_evaluation_table.csv
+(Day 5)
+
+**Final outputs:** `models/prophet_models/*.pkl` (20 models), `data/processed/all_forecasts.csv`, `data/processed/seasonality_analysis.csv`, `data/processed/uncertainty_metrics.csv`, `data/processed/inventory_risk.csv`, `data/processed/baseline_comparison.csv`, `data/processed/final_evaluation_table.csv`
+
+---
+
+### Day 1 — Single-Product Prophet Fit + Config Debugging
+
+**File:** `src/module2_demand/prophet_model.py`
+**Notebook:** `notebooks/13_prophet_exploration.ipynb`
+
+Built `prepare_prophet_data()` and `train_prophet_model()`, first tested on product 
+21915 (RED HARMONICA IN BOX, high-variance/spiky demand).
+
+**Bug found and fixed:** default config (`yearly_seasonality=True` + UK holidays) produced deeply negative 8-week forecasts (-848 to -1938 units). Diagnosed via components plot: with only ~54 weeks (~1 year) of history, yearly seasonality had no repeated cycle to validate against and fit the shape of one specific year instead of a real pattern; UK holidays were estimated from single occurrences. Fixed by disabling both — final model: trend + weekly seasonality only.
+
+---
+
+### Day 2 — Multi-Product Pipeline + Data Quality Flag
+
+**File:** `src/module2_demand/forecast_pipeline.py`
+**Notebook:** `notebooks/14_multi_product_forecasts.ipynb`
+
+Scaled Day 1's model to all 20 products, saving forecasts and trained models.
+
+**Fix 1 — TrendChange% division-by-near-zero:** original formula divided by `trend_start`, which is near-zero for many products, producing values like 28,427%. Fixed by dividing by each product's historical mean demand instead.
+
+**Fix 2 — data quality flag added:** built `assess_forecastability()` to flag products with sparse/spike-driven demand (likely wholesale/reseller orders) that Prophet can't meaningfully model. Initial OR-based threshold (zero% > 40% OR spike ratio > 15) incorrectly flagged product 23203, which had a perfectly normal forecast; switched to AND after verifying, correctly narrowing the flag to products 23843 and 23166.
+
+**Fix 3 — weekly seasonality bug:** confirmed via `demand['Week'].dt.day_name().unique()` that every training date falls on Monday 
+— meaning "weekly seasonality" had no real day-of-week variation to learn from, and forecast dates (defaulting to Sunday via `freq='W'`) landed on an unconstrained part of the fitted curve, crashing forecasts toward implausible values (product 84077: historical mean ~910, forecast ~100). Fixed by disabling `weekly_seasonality` and switching to `freq='W-MON'`. Final model: **trend only** — the only component genuinely supported by this dataset's weekly-aggregated, single-weekday structure.
+
+---
+
+### Day 3 — Uncertainty Quantification + Inventory Risk
+
+**File:** `src/module2_demand/uncertainty_analysis.py`
+**Notebook:** `notebooks/15_uncertainty_analysis.ipynb`
+
+Built relative uncertainty metrics and a synthetic inventory risk assessment per 
+product.
+
+**Fix 1 — uncertainty hidden by clipping:** dividing IntervalWidth by `yhat` 
+silently reported 0% relative uncertainty for product 23166, whose forecast is 
+clipped to exactly 0 — the opposite of the truth, since it's one of the least 
+reliable forecasts in the dataset. Fixed by dividing by historical mean demand 
+instead; 23166 correctly moved to the second-highest uncertainty ranking.
+
+**Fix 2 — inventory risk misclassification:** the same clipping issue caused 
+23166 to show as "Adequate" stock status. Fixed by adding an explicit check: any 
+product with `DataQualityFlag != 'OK'` is labeled "Unreliable Forecast" rather 
+than receiving a computed status.
+
+**Fix 3 — stock/demand horizon mismatch:** synthetic CurrentStock assumed 3 weeks 
+of average demand while ForecastedDemand summed 4 weeks, structurally inflating 
+"Low Stock" classifications (80% of products). Aligned both to 4 weeks, moving 
+the distribution to 60% Low Stock / 30% Adequate / 10% Unreliable Forecast. 
+Remaining 60% is a genuine pattern (many products have Growing trend, which a 
+backward-looking stock average naturally undershoots), not a further bug — 
+CurrentStock itself remains synthetic throughout, a real dataset limitation.
+
+---
+
+### Day 4 — Naive + Seasonal Naive Baseline Comparison
+
+**File:** `src/module2_demand/baseline_models.py`
+**Notebook:** `notebooks/16_baseline_comparison.ipynb`
+
+Built naive (repeat last value) and seasonal naive (same week last year) baselines, compared against Prophet on a held-out 8-week window per product.
+
+**Key finding — average and win-rate disagree:** Prophet's average MAE beats naive (336.1 vs 379.5) once the 2 flagged products are excluded, but Prophet only wins head-to-head on 7 of 18 products. A few large wins pull the average down while most products see small losses to naive — both numbers are reported rather than picking the more flattering one.
+
+**Investigated — product 21977:** biggest single loss to naive (-150 MAE). Confirmed via direct comparison: Prophet forecast a flat ~385-391 units/week (trend extrapolation) while actual demand stayed 58-357; naive's flat 146 was closer to reality. Cause: trend-only model has no mechanism to temper a Growing trend when recent momentum doesn't continue. Not fixed — deferred to Week 5's walk-forward validation rather than tuning against a single test window.
+
+---
+
+### Day 5 — Full Evaluation Table
+
+**File:** `src/module2_demand/model_evaluation.py`
+**Notebook:** `notebooks/17_model_evaluation_summary.ipynb`
+
+Merged all four prior CSVs into one evaluation table; added mean/median improvement reporting split by data quality flag.
+
+**Fix — MAPE near-zero blowup:** MAPE only excluded exact-zero actual weeks, not small non-zero ones, causing product 21915 to show 3517% MAPE from a single near-zero-demand week. Fixed by excluding weeks below a 5-unit threshold; 21915's MAPE corrected to 470.2%, Prophet's overall average MAPE corrected from a misleading 292.2% to 122.9%.
+
+**What the numbers actually say (18 OK products):**
+- Win rate: beats naive 7/18, beats seasonal naive 13/18
+- Improvement over naive: mean -13.1%, median -3.2% (roughly a wash)
+- Improvement over seasonal naive: mean -1.6%, median +27.6% (large mean/median gap — a few products with extreme percentage swings pull the mean down even though most products see a real improvement)
+
+**In short:** Prophet's trend-only model modestly underperforms naive on the typical product, but clearly outperforms seasonal naive on 72% of products, with the median product showing a 27.6% error reduction.
+
+**Investigated — product 15036:** largest negative outlier vs. seasonal naive (-312.3%). Not a bug — seasonal naive's MAE was unusually low on this single test window, either a real seasonal pattern or a lucky match. Deferred to Week 5, same reasoning as 21977.
+
+---
+
+### Week 4 File Summary
+
+| File | Purpose |
+|---|---|
+| `src/module2_demand/prophet_model.py` | Single-product Prophet fit, trend-only config |
+| `src/module2_demand/forecast_pipeline.py` | Multi-product batch pipeline, data quality flag |
+| `src/module2_demand/uncertainty_analysis.py` | Relative uncertainty, inventory risk assessment |
+| `src/module2_demand/baseline_models.py` | Naive + seasonal naive baselines, comparison metrics |
+| `src/module2_demand/model_evaluation.py` | Merged evaluation table, mean/median summary |
+| `notebooks/13_prophet_exploration.ipynb` | Single-product testing, seasonality debugging (Day 1) |
+| `notebooks/14_multi_product_forecasts.ipynb` | Batch pipeline validation, weekly seasonality fix (Day 2) |
+| `notebooks/15_uncertainty_analysis.ipynb` | Uncertainty + inventory risk analysis (Day 3) |
+| `notebooks/16_baseline_comparison.ipynb` | Baseline comparison, 21977 investigation (Day 4) |
+| `notebooks/17_model_evaluation_summary.ipynb` | Final evaluation table, 15036 investigation (Day 5) |
+| `models/prophet_models/*.pkl` | 20 trained Prophet models |
+| `data/processed/final_evaluation_table.csv` | Combined metrics: MAE, MAPE, uncertainty, trend, risk |
