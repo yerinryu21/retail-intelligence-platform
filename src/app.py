@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
+import plotly.graph_objects as go
+
+
 
 # ── Page config ────────────────────────────────────────────────────
 st.set_page_config(
@@ -59,6 +62,19 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("**Data Source:** UCI Online Retail (UK, 2010-2011)")
 st.sidebar.markdown("**Model:** XGBoost + SHAP")
 st.sidebar.markdown("**LLM:** Ollama Llama3 (local)")
+
+
+_sidebar_folds = pd.read_csv('data/processed/walkforward_folds.csv')
+_sidebar_folds_ok = _sidebar_folds[_sidebar_folds['DataQualityFlag'] == 'OK']
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Model Performance**")
+st.sidebar.markdown(f"Demand MAPE: {_sidebar_folds_ok['Prophet_MAPE'].median():.1f}% (median)")
+st.sidebar.markdown(
+    f"Prophet win rate: {_sidebar_folds_ok['BeatNaive'].mean():.0%} vs naive, "
+    f"{_sidebar_folds_ok['BeatSeasonal'].mean():.0%} vs seasonal"
+)
+
 
 # ══════════════════════════════════════════════════════════════════
 # TAB 1: CHURN PREDICTION
@@ -333,10 +349,328 @@ if selected_tab == "Churn Prediction":
             )
             st.plotly_chart(fig_driver, use_container_width=True)
 
-elif selected_tab == "Demand Forecast":
-    st.markdown('<p class="main-header">Demand Forecasting</p>', unsafe_allow_html=True)
-    st.info("Coming in Week 5 — Demand forecasting module under construction")
 
 elif selected_tab == "AI Insights":
     st.markdown('<p class="main-header">AI Insights</p>', unsafe_allow_html=True)
     st.info("Coming in Week 6 — LLM narration layer under construction")
+    
+    
+
+elif selected_tab == "Demand Forecast":
+
+    st.markdown('<p class="main-header">Demand & Inventory Intelligence</p>',
+                unsafe_allow_html=True)
+    st.markdown("Forecast product demand with confidence intervals — "
+                "and know exactly when to reorder before stockouts happen.")
+    st.markdown("---")
+
+    @st.cache_data
+    def load_demand_data():
+        forecasts = pd.read_csv('data/processed/all_forecasts.csv')
+        forecasts['ds'] = pd.to_datetime(forecasts['ds'])
+        return forecasts
+
+    @st.cache_data
+    def load_alerts():
+        return pd.read_csv('data/processed/inventory_alerts.csv')
+
+    @st.cache_data
+    def load_folds():
+        return pd.read_csv('data/processed/walkforward_folds.csv')
+
+    @st.cache_data
+    def load_walkforward_summary():
+        return pd.read_csv('data/processed/walkforward_summary.csv')
+
+    forecasts = load_demand_data()
+    alerts = load_alerts()
+    folds = load_folds()
+    folds_ok = folds[folds['DataQualityFlag'] == 'OK'].copy()
+    wf_summary = load_walkforward_summary()
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    critical_count = (alerts['AlertLevel'] == 'critical').sum()
+    warning_count = (alerts['AlertLevel'] == 'warning').sum()
+    unreliable_count = (alerts['AlertLevel'] == 'unreliable').sum()
+    total_products = len(alerts)
+    avg_mape = folds_ok['Prophet_MAPE'].mean()
+
+    with col1:
+        st.metric(label="Products Forecasted", value=f"{total_products}")
+
+    with col2:
+        st.metric(
+            label="Stockout Risk",
+            value=f"{critical_count}",
+            delta="Needs immediate action" if critical_count > 0 else "All clear"
+        )
+
+    with col3:
+        st.metric(
+            label="Reorder Soon",
+            value=f"{warning_count}",
+            delta="Order within 2 weeks" if warning_count > 0 else "All clear"
+        )
+
+    with col4:
+        st.metric(
+            label="Avg Forecast MAPE",
+            value=f"{avg_mape:.1f}%",
+            delta=f"Walk-forward, {unreliable_count} products excluded"
+        )
+
+    st.markdown("---")
+    
+    st.subheader("Demand Overview")
+
+    col_c1, col_c2, col_c3 = st.columns(3)
+
+    with col_c1:
+        status_counts = alerts['AlertStatus'].value_counts().reset_index()
+        status_counts.columns = ['Status', 'Count']
+
+        fig_pie = px.pie(
+            status_counts, names='Status', values='Count',
+            title='Alert Status Distribution',
+            color='Status',
+            color_discrete_map={
+                '🔴 Stockout Risk': '#d62728',
+                '🟡 Reorder Soon': '#ff7f0e',
+                '🟣 Overstock': '#9467bd',
+                '🟢 Adequate': '#2ca02c',
+                '⚪ Unreliable Forecast': '#7f7f7f'
+            },
+            hole=0.4
+        )
+        fig_pie.update_layout(height=300, margin=dict(t=40, b=0))
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with col_c2:
+        reorder_products = alerts[
+            (alerts['SuggestedReorderQty'] > 0) & (alerts['AlertLevel'] != 'unreliable')
+        ].sort_values('SuggestedReorderQty', ascending=False)
+
+        if len(reorder_products) > 0:
+            reorder_products = reorder_products.copy()
+            reorder_products['StockCode'] = reorder_products['StockCode'].astype(str)
+            fig_reorder = px.bar(
+                reorder_products.head(10),
+                x='StockCode', y='SuggestedReorderQty',
+                title='Suggested Reorder Quantities',
+                color='AlertStatus',
+                color_discrete_map={
+                    '🔴 Stockout Risk': '#d62728',
+                    '🟡 Reorder Soon': '#ff7f0e'
+                },
+                labels={'SuggestedReorderQty': 'Units to Reorder'}
+            )
+            fig_reorder.update_xaxes(type='category')
+            fig_reorder.update_layout(height=300, margin=dict(t=40, b=0), showlegend=False)
+            st.plotly_chart(fig_reorder, use_container_width=True)
+        else:
+            st.info("No reorders currently needed")
+
+    with col_c3:
+        fig_mape = px.histogram(
+            folds_ok, x='Prophet_MAPE', nbins=20,
+            title='Forecast Error Distribution (MAPE %)',
+            labels={'Prophet_MAPE': 'MAPE (%)'},
+            color_discrete_sequence=['#1f77b4']
+        )
+        fig_mape.update_layout(height=300, margin=dict(t=40, b=0))
+        st.plotly_chart(fig_mape, use_container_width=True)
+
+    st.markdown("---")
+
+    st.subheader("Inventory Alerts")
+
+    alert_filter = st.multiselect(
+        "Filter by Alert Status",
+        options=['🔴 Stockout Risk', '🟡 Reorder Soon',
+                 '🟣 Overstock', '🟢 Adequate', '⚪ Unreliable Forecast'],
+        default=['🔴 Stockout Risk', '🟡 Reorder Soon']
+    )
+
+    filtered_alerts = alerts[alerts['AlertStatus'].isin(alert_filter)]
+
+    alert_display_cols = {
+        'AlertStatus': 'Status',
+        'StockCode': 'Product Code',
+        'Description': 'Product Name',
+        'EstimatedCurrentStock': 'Current Stock',
+        'ForecastedDemand_Reorder': 'Forecasted (3wk)',
+        'ReorderPoint': 'Reorder Point',
+        'SuggestedReorderQty': 'Reorder Qty',
+        'AlertMessage': 'Action Required'
+    }
+
+    display_alerts = filtered_alerts[list(alert_display_cols.keys())].rename(
+        columns=alert_display_cols
+    )
+
+    for col in ['Current Stock', 'Forecasted (3wk)', 'Reorder Point', 'Reorder Qty']:
+        display_alerts[col] = display_alerts[col].apply(lambda x: f"{x:.0f}")
+
+    st.caption("Note: Current Stock is a synthetic estimate — no real inventory "
+               "data exists in this dataset.")
+
+    st.dataframe(display_alerts, use_container_width=True, height=350)
+
+    csv = filtered_alerts.to_csv(index=False)
+    st.download_button(
+        label="Download alert list",
+        data=csv,
+        file_name="inventory_alerts.csv",
+        mime="text/csv"
+    )
+
+    st.markdown("---")
+
+    st.subheader("Product Forecast Deep Dive")
+
+    products = forecasts['StockCode'].unique().tolist()
+
+    selected_product = st.selectbox(
+        "Select a product to view forecast",
+        options=products,
+        format_func=lambda x: f"{x} — "
+                               f"{forecasts[forecasts['StockCode']==x]['Description'].iloc[0][:40]}"
+    )
+
+    if selected_product:
+        product_forecast = forecasts[forecasts['StockCode'] == selected_product].copy()
+        historical = product_forecast[~product_forecast['IsFuture']]
+        future = product_forecast[product_forecast['IsFuture']]
+        product_alert = alerts[alerts['StockCode'] == selected_product]
+        product_flag = product_forecast['DataQualityFlag'].iloc[0]
+
+        if product_flag != 'OK':
+            st.warning(f"This product is flagged as low-reliability "
+                       f"({product_flag}) — forecast shown for reference only, "
+                       f"not recommended for automated reorder decisions.")
+
+        col_p1, col_p2 = st.columns([3, 1])
+
+        with col_p1:
+            fig = go.Figure() # type: ignore
+
+            fig.add_trace(go.Scatter( # type: ignore
+                x=historical['ds'], y=historical['yhat'],
+                mode='lines', name='Historical',
+                line=dict(color='#1f77b4', width=2)
+            ))
+
+            fig.add_trace(go.Scatter( # type: ignore
+                x=future['ds'], y=future['yhat'],
+                mode='lines', name='Forecast',
+                line=dict(color='#d62728', width=2, dash='dash')
+            ))
+
+            fig.add_trace(go.Scatter( # type: ignore
+                x=pd.concat([future['ds'], future['ds'][::-1]]),
+                y=pd.concat([future['yhat_upper'], future['yhat_lower'][::-1]]),
+                fill='toself', fillcolor='rgba(214,39,40,0.1)',
+                line=dict(color='rgba(255,255,255,0)'),
+                name='95% Confidence Interval'
+            ))
+
+            last_historical = historical['ds'].max()
+            fig.add_vline(x=last_historical, line_dash='dot', line_color='gray',
+                         annotation_text='Forecast start')
+
+            fig.update_layout(
+                title=f"Demand Forecast: {selected_product}",
+                xaxis_title='Week', yaxis_title='Units Sold', height=400,
+                legend=dict(orientation='h', yanchor='bottom', y=1.02)
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_p2:
+            st.markdown("**Product Summary**")
+
+            if len(product_alert) > 0:
+                alert_row = product_alert.iloc[0]
+                st.write(f"**Status:** {alert_row['AlertStatus']}")
+
+                if alert_row['AlertLevel'] != 'unreliable':
+                    st.write(f"**Est. Stock:** {alert_row['EstimatedCurrentStock']:.0f} units")
+                    st.write(f"**3-wk Forecast:** {alert_row['ForecastedDemand_Reorder']:.0f} units")
+                    st.write(f"**Reorder Point:** {alert_row['ReorderPoint']:.0f} units")
+
+                    if alert_row['SuggestedReorderQty'] > 0:
+                        st.warning(f"**Reorder:** {alert_row['SuggestedReorderQty']:.0f} units")
+
+                st.markdown("**Action Required:**")
+                st.info(alert_row['AlertMessage'])
+
+            st.markdown("**Forecast Statistics**")
+            st.write(f"Next 8 weeks:")
+            st.write(f"- Min forecast: {future['yhat'].min():.0f}")
+            st.write(f"- Max forecast: {future['yhat'].max():.0f}")
+            st.write(f"- Total expected: {future['yhat'].sum():.0f}")
+            
+    st.markdown("---")
+    st.subheader("Model Validation: Walk-Forward Backtesting")
+
+    st.caption(
+        "5-fold walk-forward validation — each fold trains on past data "
+        "only and tests on the next 4 weeks. This mirrors real-world "
+        "deployment where the model is retrained weekly."
+    )
+
+    col_wf1, col_wf2 = st.columns(2)
+
+    with col_wf1:
+        wf_summary_sorted = wf_summary.sort_values('WinRateVsNaive').copy()
+        wf_summary_sorted['StockCode'] = wf_summary_sorted['StockCode'].astype(str)
+        fig_win = px.bar(
+            wf_summary_sorted,
+            x='WinRateVsNaive', y='StockCode', orientation='h',
+            title='Prophet Win Rate vs Naive Baseline',
+            labels={'WinRateVsNaive': 'Win Rate (% of folds)', 'StockCode': 'Product'},
+            color='WinRateVsNaive', color_continuous_scale='RdYlGn'
+        )
+        fig_win.update_yaxes(type='category')
+        fig_win.add_vline(x=0.5, line_dash='dash', line_color='gray', annotation_text='50%')
+        fig_win.update_layout(height=600, coloraxis_showscale=False, xaxis_tickformat='.0%')
+        st.plotly_chart(fig_win, use_container_width=True)
+
+    with col_wf2:
+        mae_comparison = pd.DataFrame({
+            'Model': ['Prophet', 'Naive Baseline', 'Seasonal Naive'],
+            'Mean MAE': [
+                folds_ok['Prophet_MAE'].mean(),
+                folds_ok['Naive_MAE'].mean(),
+                folds_ok['Seasonal_MAE'].mean()
+            ]
+        })
+
+        fig_mae = px.bar(
+            mae_comparison, x='Model', y='Mean MAE',
+            title='Average MAE: Prophet vs Baselines',
+            color='Model',
+            color_discrete_map={
+                'Prophet': '#1f77b4',
+                'Naive Baseline': '#d62728',
+                'Seasonal Naive': '#ff7f0e'
+            },
+            text='Mean MAE'
+        )
+        fig_mae.update_traces(texttemplate='%{text:.1f}', textposition='outside')
+        fig_mae.update_layout(height=400, showlegend=False, yaxis_title='Mean Absolute Error (units)')
+        st.plotly_chart(fig_mae, use_container_width=True)
+
+    col_b1, col_b2, col_b3 = st.columns(3)
+
+    overall_win_rate = folds_ok['BeatNaive'].mean()
+    overall_seasonal_win = folds_ok['BeatSeasonal'].mean()
+    median_mape = folds_ok['Prophet_MAPE'].median()
+
+    with col_b1:
+        st.metric("Win Rate vs Naive", f"{overall_win_rate:.0%}", delta="of all folds")
+    with col_b2:
+        st.metric("Win Rate vs Seasonal", f"{overall_seasonal_win:.0%}", delta="of all folds")
+    with col_b3:
+        st.metric("Median MAPE", f"{median_mape:.1f}%", delta="across all products and folds")          
