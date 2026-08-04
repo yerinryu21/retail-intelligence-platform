@@ -38,6 +38,7 @@ def build_customer_risk_table() -> pd.DataFrame:
     X_test = data['X_test']
     y_test = data['y_test']
     feature_cols = data['feature_cols']
+    customer_id_test = data['customer_id_test']
     
     model = joblib.load('models/churn_model_tuned.pkl')
     explainer = joblib.load('models/shap_explainer.pkl')
@@ -53,6 +54,7 @@ def build_customer_risk_table() -> pd.DataFrame:
     # ── Build main table ───────────────────────────────────────────
     risk_table = X_test.copy().reset_index(drop=True)
     risk_table['ShapRowIndex'] = risk_table.index  # preserve original position before any sorting/filtering happens
+    risk_table['CustomerID'] = customer_id_test.reset_index(drop=True)
     risk_table['ChurnProbability'] = y_prob
     risk_table['PredictedChurn'] = y_pred
     risk_table['ActualChurn'] = y_test.reset_index(drop=True)

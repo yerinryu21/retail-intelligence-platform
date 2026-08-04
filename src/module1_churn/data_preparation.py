@@ -42,6 +42,8 @@ def prepare_churn_data(customer_features_path: str = 'data/processed/customer_fe
 
     X = customers[feature_cols]
     y = customers[target_col]
+    
+    customer_ids = customers['CustomerID']
 
     # ── Stratified random split ────────────────────────────────────
     # stratify=y ensures train and test have the same churn rate
@@ -51,6 +53,8 @@ def prepare_churn_data(customer_features_path: str = 'data/processed/customer_fe
         random_state=42,
         stratify=y
     )
+    
+    customer_id_test = customer_ids.loc[X_test.index]
 
     # ── Scale features ─────────────────────────────────────────────
     scaler = StandardScaler()
@@ -80,6 +84,7 @@ def prepare_churn_data(customer_features_path: str = 'data/processed/customer_fe
         'X_test_scaled': X_test_scaled,
         'y_train': y_train,
         'y_test': y_test,
+        'customer_id_test': customer_id_test,
         'feature_cols': feature_cols,
         'scaler': scaler
     }
