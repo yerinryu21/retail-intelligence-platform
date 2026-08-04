@@ -493,24 +493,11 @@ Scaled Day 1's model to all 20 products, saving forecasts and trained models.
 Built relative uncertainty metrics and a synthetic inventory risk assessment per 
 product.
 
-**Fix 1 — uncertainty hidden by clipping:** dividing IntervalWidth by `yhat` 
-silently reported 0% relative uncertainty for product 23166, whose forecast is 
-clipped to exactly 0 — the opposite of the truth, since it's one of the least 
-reliable forecasts in the dataset. Fixed by dividing by historical mean demand 
-instead; 23166 correctly moved to the second-highest uncertainty ranking.
+**Fix 1 — uncertainty hidden by clipping:** dividing IntervalWidth by `yhat` silently reported 0% relative uncertainty for product 23166, whose forecast is clipped to exactly 0 — the opposite of the truth, since it's one of the least reliable forecasts in the dataset. Fixed by dividing by historical mean demand instead; 23166 correctly moved to the second-highest uncertainty ranking.
 
-**Fix 2 — inventory risk misclassification:** the same clipping issue caused 
-23166 to show as "Adequate" stock status. Fixed by adding an explicit check: any 
-product with `DataQualityFlag != 'OK'` is labeled "Unreliable Forecast" rather 
-than receiving a computed status.
+**Fix 2 — inventory risk misclassification:** the same clipping issue caused 23166 to show as "Adequate" stock status. Fixed by adding an explicit check: any product with `DataQualityFlag != 'OK'` is labeled "Unreliable Forecast" rather than receiving a computed status.
 
-**Fix 3 — stock/demand horizon mismatch:** synthetic CurrentStock assumed 3 weeks 
-of average demand while ForecastedDemand summed 4 weeks, structurally inflating 
-"Low Stock" classifications (80% of products). Aligned both to 4 weeks, moving 
-the distribution to 60% Low Stock / 30% Adequate / 10% Unreliable Forecast. 
-Remaining 60% is a genuine pattern (many products have Growing trend, which a 
-backward-looking stock average naturally undershoots), not a further bug — 
-CurrentStock itself remains synthetic throughout, a real dataset limitation.
+**Fix 3 — stock/demand horizon mismatch:** synthetic CurrentStock assumed 3 weeks of average demand while ForecastedDemand summed 4 weeks, structurally inflating "Low Stock" classifications (80% of products). Aligned both to 4 weeks, moving the distribution to 60% Low Stock / 30% Adequate / 10% Unreliable Forecast. Remaining 60% is a genuine pattern (many products have Growing trend, which a backward-looking stock average naturally undershoots), not a further bug — CurrentStock itself remains synthetic throughout, a real dataset limitation.
 
 ---
 
@@ -563,3 +550,172 @@ Merged all four prior CSVs into one evaluation table; added mean/median improvem
 | `notebooks/17_model_evaluation_summary.ipynb` | Final evaluation table, 15036 investigation (Day 5) |
 | `models/prophet_models/*.pkl` | 20 trained Prophet models |
 | `data/processed/final_evaluation_table.csv` | Combined metrics: MAE, MAPE, uncertainty, trend, risk |
+
+
+
+## Week 5: Backtesting + Inventory Alerts + Streamlit Tab 2
+
+### Overview
+
+Week 5 validated the Week 4 demand forecasting model through walk-forward backtesting, converted forecast outputs into an actionable inventory alert system, and completed the Streamlit dashboard with a fully interactive Tab 2. Multi-window testing resolved one open question from Week 4 (product 21977's single-window underperformance did not hold up) and confirmed another (product 15036), while identifying a new consistent underperformer (product 22086).
+
+---
+
+### Day 1 — Walk-Forward Validation Framework
+
+**File:** `src/module2_demand/walk_forward_validation.py`
+**Notebook:** `notebooks/18_walkforward_results.ipynb`
+
+Built a 5-fold walk-forward validation engine across all 20 products, using 4-week test windows with an expanding training window per fold. Compared Prophet against naive and seasonal naive baselines for each fold.
+
+**Key finding:** product 21977, previously flagged as underperforming in Week 4's single-window test, wins 60% of folds under multi-window testing — resolved as a one-window fluke rather than a real pattern. Product 15036 confirmed as a consistent underperformer (0% win rate across all 5 folds). Product 22086 identified as a new consistent underperformer with the same pattern.
+
+---
+
+### Day 2 — Backtest Analysis + Error Deep Dive
+
+**File:** `src/module2_demand/backtest_analysis.py`
+**Notebook:** `notebooks/19_backtest_insights.ipynb`
+
+Built error pattern analysis, four backtest visualizations (error heatmap, fold comparison, MAPE distribution, win rate by product), and an auto-generated plain-text backtest report.
+
+**Key results (18 products):** Prophet beats naive baseline in 47.8% of folds and seasonal naive in 70.0% of folds. Median MAPE of 73.4% reported alongside mean MAPE of 136.0%, with the gap traced to a mix of low-demand weeks and a small number of genuinely large misses.
+
+Interview Q&A notebook written covering walk-forward methodology, interpretation of win rates against both baselines, the MAPE mean/median gap, and future improvement directions.
+
+---
+
+### Day 3 — Inventory Alert System
+
+**File:** `src/module2_demand/inventory_alerts.py`
+**Notebook:** `notebooks/20_inventory_alerts.ipynb`
+
+Built safety stock calculation (Z-score × forecast error std × √lead time) and a five-tier inventory alert system (Stockout Risk, Reorder Soon, Overstock, Adequate, Unreliable Forecast), using per-product forecast error estimated from the walk-forward fold results.
+
+**Results:** 11 of 20 products flagged Stockout Risk, 6 Adequate, 2 Unreliable Forecast, 1 Reorder Soon. Alert logic verified against three visualizations (status distribution, stock-vs-demand-vs-reorder-point, suggested reorder quantities), with product 22197 identified as carrying both the largest suggested reorder quantity and the highest forecast uncertainty among reliable products.
+
+---
+
+### Day 4 — Streamlit Tab 2: Layout + Data Tables
+
+**File:** `src/app.py`
+
+Built the Tab 2 skeleton: four KPI metrics, a filterable and downloadable inventory alert table, and a per-product forecast deep-dive section with historical/forecast chart, confidence intervals, and product-level summary panel.
+
+---
+
+### Day 5 — Streamlit Tab 2: Charts + Backtesting Results
+
+**File:** `src/app.py` (extended)
+
+Added three overview charts (alert status distribution, suggested reorder quantities, MAPE distribution histogram) and a model validation section presenting walk-forward win rates and MAE comparison against both baselines, plus a sidebar summary of live model performance metrics.
+
+---
+
+### Week 5 File Summary
+
+| File | Purpose |
+|---|---|
+| `src/module2_demand/walk_forward_validation.py` | 5-fold walk-forward validation engine, per-product summary |
+| `src/module2_demand/backtest_analysis.py` | Error pattern analysis, backtest visualizations, report generation |
+| `src/module2_demand/inventory_alerts.py` | Safety stock calculation, 5-tier alert system, alert visualizations |
+| `notebooks/18_walkforward_results.ipynb` | Walk-forward results exploration (Day 1) |
+| `notebooks/19_backtest_insights.ipynb` | Backtest deep dive, interview Q&A (Day 2) |
+| `notebooks/20_inventory_alerts.ipynb` | Alert table and chart verification (Day 3) |
+| `src/app.py` | Streamlit Tab 2 — layout, alerts, charts, backtest results (Days 4-5) |
+| `data/processed/walkforward_folds.csv` | Fold-level backtest results, all products |
+| `data/processed/walkforward_summary.csv` | Per-product walk-forward summary |
+| `data/processed/inventory_alerts.csv` | Full inventory alert table |
+
+
+## Week 6: LLM Narration Layer (Ollama + LangChain)
+
+### Overview
+
+Week 6 added a local LLM layer on top of the churn and demand models built in Weeks 2–5, translating structured model outputs into plain-English business narratives. This included customer churn explanations, demand summaries, a natural language query interface, and personalized win-back messages, all running locally via Ollama and integrated into the Streamlit dashboard.
+
+### Pipeline
+
+```text
+Customer Risk Table (Week 3) + Demand Alerts (Week 5)
+              │
+              ▼
+    RetailLLMClient (Ollama + LangChain)
+    + Prompt Template Library
+              │
+      ┌───────┼────────┬─────────────┐
+      ▼       ▼        ▼             ▼
+  Churn    Demand    Query        Win-Back
+Narrator  Narrator   Engine      Generator
+      │       │        │             │
+      └───────┴────────┴─────────────┘
+              ▼
+   Streamlit Dashboard (AI Insights)
+```
+
+---
+
+### Day 1 — Ollama Connection + Prompt Engineering
+
+**Files:** `src/module3_llm/llm_client.py`, `src/module3_llm/prompt_templates.py`
+
+**Notebook:** `notebooks/20_prompt_template_testing.ipynb`
+
+Built `RetailLLMClient`, a reusable Ollama + LangChain connection layer with retry logic and response cleaning. Created eight prompt templates covering churn, demand, inventory briefings, and natural-language queries.
+
+---
+
+### Day 2 — Churn Narration
+
+**File:** `src/module3_llm/churn_narrator.py`
+
+Built `ChurnNarrator`, which converts SHAP values into plain-English customer explanations, generates segment summaries, and creates personalized win-back messages.
+
+---
+
+### Day 3 — Demand Narration
+
+**File:** `src/module3_llm/demand_narrator.py`
+
+Built `DemandNarrator`, which translates demand forecasts into product summaries, daily inventory briefings, and weekly business reports.
+
+---
+
+### Day 4 — Natural Language Query Interface
+
+**File:** `src/module3_llm/query_engine.py`
+
+Built `QueryEngine`, which routes natural-language questions to churn, demand, or combined data sources and generates grounded answers from real platform outputs.
+
+---
+
+### Day 5 — Win-Back Generator
+
+**File:** `src/module3_llm/winback_generator.py`
+
+Built `WinBackGenerator`, which creates personalized emails, incentives, urgency levels, and recommendations based on churn probability and customer value.
+
+---
+
+### Day 6 — Streamlit Integration
+
+**File:** `src/app.py`
+
+Integrated the full LLM layer into the dashboard, adding AI customer explanations, win-back emails, daily business briefings, natural-language queries, and weekly reports.
+
+---
+
+### Week 6 File Summary
+
+| File | Purpose |
+|---|---|
+| `src/module3_llm/llm_client.py` | Ollama connection, retry logic, and response cleaning |
+| `src/module3_llm/prompt_templates.py` | Prompt template library |
+| `src/module3_llm/churn_narrator.py` | Customer and segment churn explanations |
+| `src/module3_llm/demand_narrator.py` | Forecast summaries and inventory reports |
+| `src/module3_llm/query_engine.py` | Natural-language query routing |
+| `src/module3_llm/winback_generator.py` | Personalized win-back packages |
+| `notebooks/20_prompt_template_testing.ipynb` | Prompt testing notebook |
+| `src/app.py` | Streamlit integration |
+
+
