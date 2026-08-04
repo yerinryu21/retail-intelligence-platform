@@ -3,7 +3,15 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
+from src.module3_llm.llm_client import RetailLLMClient
+from src.module3_llm.churn_narrator import ChurnNarrator # type: ignore
+from src.module3_llm.demand_narrator import DemandNarrator
+from src.module3_llm.query_engine import QueryEngine
+from src.module3_llm.winback_generator import WinBackGenerator
 
 
 # ── Page config ────────────────────────────────────────────────────
@@ -35,7 +43,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Load data ──────────────────────────────────────────────────────
+# ── Load data ────────────────────────────────────
 @st.cache_data
 def load_risk_table():
     return pd.read_csv('data/processed/customer_risk_table.csv')
@@ -48,6 +56,19 @@ def load_feature_importance():
 def load_shap_values():
     return pd.read_csv('data/processed/shap_values.csv')
 
+@st.cache_resource
+def load_llm_components():
+    client = RetailLLMClient()
+    churn_narrator = ChurnNarrator(client)
+    demand_narrator = DemandNarrator(client)
+    winback_gen = WinBackGenerator(client)
+    return client, churn_narrator, demand_narrator, winback_gen
+
+@st.cache_data
+def load_retail_data():
+    return pd.read_csv('data/processed/clean_retail.csv')
+
+# ── Sidebar ──────────────────────────────────────
 # ── Sidebar ────────────────────────────────────────────────────────
 st.sidebar.markdown("## Retail Intelligence")
 st.sidebar.markdown("---")
@@ -87,7 +108,8 @@ if selected_tab == "Churn Prediction":
     st.markdown("Identify at-risk customers before they leave — "
                 "with SHAP-explained reasons and revenue impact.")
     st.markdown("---")
-
+    
+ 
     # Load data
     risk_table = load_risk_table()
     feature_importance = load_feature_importance()
@@ -332,7 +354,7 @@ if selected_tab == "Churn Prediction":
             driver_df['Direction'] = driver_df['SHAP Value'].apply(
                 lambda x: 'Increases Risk' if x > 0 else 'Decreases Risk'
             )
-
+            
             fig_driver = px.bar(
                 driver_df, x='SHAP Value', y='Feature',
                 orientation='h', color='Direction',
@@ -342,18 +364,146 @@ if selected_tab == "Churn Prediction":
                 },
                 title="This Customer's Risk Drivers"
             )
-            fig_driver.update_layout(
+            
+            fig_driver.update_layout( # type: ignore
                 height=300, margin=dict(t=40, b=0),
                 yaxis={'categoryorder': 'total ascending'},
                 showlegend=True
             )
-            st.plotly_chart(fig_driver, use_container_width=True)
+            
+            st.plotly_chart(fig_driver, use_container_width=True) # type: ignore
+            st.markdown("---")
+            st.subheader("AI-Generated Insights")
+
+            client, churn_narrator, demand_narrator, winback_gen = load_llm_components()
+
+            col_ai1, col_ai2 = st.columns(2)
+
+            with col_ai1:
+                if st.button("Generate live AI explanation"):
+                    with st.spinner("Generating explanation..."):
+                        feature_cols = ['Frequency', 'Monetary', 'AvgOrderValue',
+                                         'UniqueProducts', 'AvgQuantity', 'DaysActive',
+                                         'OrdersPerDay']
+                        live_explanation = churn_narrator.explain_customer(
+                            customer, customer_shap_row, feature_cols
+                        )
+                    st.success(live_explanation)
+
+            with col_ai2:
+                if customer['RiskTier'] in ['⚫ Extreme Risk', '🔴 High Risk', '🟡 Medium Risk']:
+                    if st.button("Generate win-back email"):
+                        with st.spinner("Generating personalized win-back email..."):
+                            feature_cols = ['Frequency', 'Monetary', 'AvgOrderValue',
+                                             'UniqueProducts', 'AvgQuantity', 'DaysActive',
+                                             'OrdersPerDay']
+                            retail_df = load_retail_data()
+                            risk_table_full = load_risk_table()
+                            clv_median = risk_table_full['CLV'].median()
+
+                            winback = winback_gen.generate_for_customer(
+                                customer, customer_shap_row, feature_cols,
+                                clv_median, retail_df
+                            )
+
+                        st.write(f"**Favorite product:** {winback['favorite_product'] or 'Unknown'}")
+                        st.write(f"**Recommended incentive:** {winback['recommended_incentive']}")
+                        st.write(f"**Urgency:** {winback['urgency']}")
+                        st.markdown(f"**Subject:** {winback['email_subject']}")
+                        st.text_area("Email body", value=winback['email_body'], height=150)
+                else:
+                    st.caption("Win-back email available for Extreme, High, and Medium risk customers.")
+
 
 
 elif selected_tab == "AI Insights":
+
     st.markdown('<p class="main-header">AI Insights</p>', unsafe_allow_html=True)
-    st.info("Coming in Week 6 — LLM narration layer under construction")
-    
+    st.markdown("Ask plain-English questions about your customers and inventory.")
+    st.markdown("---")
+
+    client, churn_narrator, demand_narrator, winback_gen = load_llm_components()
+
+    # ── Daily briefing ───────────────────────────────────────────
+    st.subheader("Today's Business Briefing")
+
+    col_brief1, col_brief2 = st.columns(2)
+
+    with col_brief1:
+        st.markdown("**Customer Retention Summary**")
+        if st.button("Generate churn segment summaries"):
+            with st.spinner("Generating customer summaries..."):
+                risk_table_ai = load_risk_table()
+                for tier in ['⚫ Extreme Risk', '🔴 High Risk', '🟡 Medium Risk', '🟢 Low Risk']:
+                    tier_df = risk_table_ai[risk_table_ai['RiskTier'] == tier]
+                    if len(tier_df) > 0:
+                        summary = churn_narrator.summarize_segment(tier, tier_df)
+                        with st.expander(tier):
+                            st.write(summary)
+
+    with col_brief2:
+        st.markdown("**Inventory Status Briefing**")
+        if st.button("Generate daily inventory briefing"):
+            with st.spinner("Generating inventory briefing..."):
+                alerts_ai = pd.read_csv('data/processed/inventory_alerts.csv')
+                briefing = demand_narrator.generate_daily_briefing(alerts_ai)
+            st.info(briefing)
+
+    st.markdown("---")
+
+    # ── Natural language query interface ─────────────────────────
+    st.subheader("Ask a Question")
+
+    st.caption(
+        "Ask anything about your customers or inventory. "
+        "For example: 'Which customers are most at risk?', "
+        "'What products need reordering?', "
+        "'Give me an overall business health summary'"
+    )
+
+    example_questions = [
+        "Which customers are at highest risk of leaving?",
+        "What products need urgent reordering?",
+        "How much revenue is at risk from churning customers?",
+        "Give me an overall business health summary"
+    ]
+
+    selected_example = st.selectbox(
+        "Or pick an example question:",
+        options=["Type your own question below..."] + example_questions
+    )
+
+    default_question = selected_example if selected_example != "Type your own question below..." else ""
+
+    user_question = st.text_input(
+        "Your question:",
+        value=default_question,
+        placeholder="e.g. Which customers should I focus on retaining this week?"
+    )
+
+    if st.button("Ask") and user_question:
+        with st.spinner("Analyzing your data..."):
+            query_engine = QueryEngine(llm_client=client)
+            result = query_engine.answer(user_question)
+
+        st.markdown("**Answer:**")
+        st.success(result['answer'])
+        st.caption(f"Data source used: {result['route']}")
+
+    st.markdown("---")
+
+    # ── Weekly report ─────────────────────────────────────────────
+    st.subheader("Weekly Demand Report")
+
+    if st.button("Generate this week's demand report"):
+        with st.spinner("Generating weekly report..."):
+            forecasts_ai = pd.read_csv('data/processed/all_forecasts.csv')
+            forecasts_ai['ds'] = pd.to_datetime(forecasts_ai['ds'])
+            folds_ai = pd.read_csv('data/processed/walkforward_folds.csv')
+
+            weekly_report = demand_narrator.generate_weekly_report(forecasts_ai, folds_ai)
+
+        st.info(weekly_report)
     
 
 elif selected_tab == "Demand Forecast":
