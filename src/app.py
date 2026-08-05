@@ -6,12 +6,23 @@ import plotly.graph_objects as go
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from src.api_client import get_api_client
 
-from src.module3_llm.llm_client import RetailLLMClient
-from src.module3_llm.churn_narrator import ChurnNarrator # type: ignore
-from src.module3_llm.demand_narrator import DemandNarrator
-from src.module3_llm.query_engine import QueryEngine
-from src.module3_llm.winback_generator import WinBackGenerator
+import re
+
+def strip_emoji(text: str) -> str:
+    """Remove emoji/symbol characters from LLM-generated prose for cleaner display.
+    Does not touch underlying data values (RiskTier, AlertStatus, etc.),
+    only the narrative text shown to the user."""
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F300-\U0001FAFF"  # symbols & pictographs, emoticons, transport, supplemental
+        "\U00002600-\U000027BF"  # misc symbols, dingbats
+        "\U0001F1E6-\U0001F1FF"  # flags
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub('', text).strip()
 
 
 # ── Page config ────────────────────────────────────────────────────
@@ -43,30 +54,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Load data ────────────────────────────────────
-@st.cache_data
-def load_risk_table():
-    return pd.read_csv('data/processed/customer_risk_table.csv')
+# ── API client ─────────────────────────────────────
+api = get_api_client()
 
-@st.cache_data
-def load_feature_importance():
-    return pd.read_csv('data/processed/feature_importance.csv')
-
-@st.cache_data
-def load_shap_values():
-    return pd.read_csv('data/processed/shap_values.csv')
-
-@st.cache_resource
-def load_llm_components():
-    client = RetailLLMClient()
-    churn_narrator = ChurnNarrator(client)
-    demand_narrator = DemandNarrator(client)
-    winback_gen = WinBackGenerator(client)
-    return client, churn_narrator, demand_narrator, winback_gen
-
-@st.cache_data
-def load_retail_data():
-    return pd.read_csv('data/processed/clean_retail.csv')
 
 # ── Sidebar ──────────────────────────────────────
 # ── Sidebar ────────────────────────────────────────────────────────
@@ -85,16 +75,17 @@ st.sidebar.markdown("**Model:** XGBoost + SHAP")
 st.sidebar.markdown("**LLM:** Ollama Llama3 (local)")
 
 
-_sidebar_folds = pd.read_csv('data/processed/walkforward_folds.csv')
-_sidebar_folds_ok = _sidebar_folds[_sidebar_folds['DataQualityFlag'] == 'OK']
+_sidebar_backtest = api.get_backtest_results()
+_sidebar_metrics = _sidebar_backtest.get("overall_metrics", {}) if _sidebar_backtest else {}
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Model Performance**")
-st.sidebar.markdown(f"Demand MAPE: {_sidebar_folds_ok['Prophet_MAPE'].median():.1f}% (median)")
-st.sidebar.markdown(
-    f"Prophet win rate: {_sidebar_folds_ok['BeatNaive'].mean():.0%} vs naive, "
-    f"{_sidebar_folds_ok['BeatSeasonal'].mean():.0%} vs seasonal"
-)
+if _sidebar_metrics:
+    st.sidebar.markdown(f"Demand MAPE: {_sidebar_metrics.get('median_mape_excl_inf', 0):.1f}% (median)")
+    st.sidebar.markdown(
+        f"Prophet win rate: {_sidebar_metrics.get('prophet_win_rate_vs_naive', 0):.0%} vs naive, "
+        f"{_sidebar_metrics.get('prophet_win_rate_vs_seasonal', 0):.0%} vs seasonal"
+    )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -110,10 +101,10 @@ if selected_tab == "Churn Prediction":
     st.markdown("---")
     
  
-    # Load data
-    risk_table = load_risk_table()
-    feature_importance = load_feature_importance()
-    shap_values_df = load_shap_values()
+    # Load data via API
+    risk_table = api.get_all_customers()
+    feature_importance_data = api.get_feature_importance()
+    feature_importance = pd.DataFrame(feature_importance_data.get("features", []))
 
     # ── Row 1: KPI metrics ─────────────────────────────────────────
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -131,21 +122,24 @@ if selected_tab == "Churn Prediction":
         st.metric(
             label="Extreme Risk",
             value=f"{len(extreme_risk):,}",
-            delta=f"{len(extreme_risk)/total_customers:.1%} of base"
+            delta=f"{len(extreme_risk)/total_customers:.1%} of base",
+            delta_color="off"
         )
 
     with col3:
         st.metric(
             label="High Risk",
             value=f"{len(high_risk):,}",
-            delta=f"{len(high_risk)/total_customers:.1%} of base"
+            delta=f"{len(high_risk)/total_customers:.1%} of base",
+            delta_color="off"
         )
 
     with col4:
         st.metric(
             label="Medium Risk",
             value=f"{len(medium_risk):,}",
-            delta=f"{len(medium_risk)/total_customers:.1%} of base"
+            delta=f"{len(medium_risk)/total_customers:.1%} of base",
+            delta_color="off"
         )
 
     with col5:
@@ -343,77 +337,60 @@ if selected_tab == "Churn Prediction":
             st.warning(f"{customer['TopChurnDriver']} — {customer['TopDriverDirection']}")
             
             
-    # Top drivers bar chart for this specific customer
-            customer_shap_row = shap_values_df.iloc[customer['ShapRowIndex']]
+    # Top drivers bar chart for this specific customer, via API
+            customer_detail = api.get_customer_detail(selected_customer)
+            top_shap_factors = customer_detail.get('top_shap_factors', [])
 
-            driver_df = pd.DataFrame({
-                'Feature': [col.replace('shap_', '') for col in shap_values_df.columns],
-                'SHAP Value': customer_shap_row.values
-            }).sort_values('SHAP Value', key=abs, ascending=False).head(6)
+            if top_shap_factors:
+                driver_df = pd.DataFrame(top_shap_factors)
+                driver_df['Direction'] = driver_df['shap_value'].apply(
+                    lambda x: 'Increases Risk' if x > 0 else 'Decreases Risk'
+                )
+                driver_df = driver_df.rename(columns={'feature': 'Feature', 'shap_value': 'SHAP Value'})
 
-            driver_df['Direction'] = driver_df['SHAP Value'].apply(
-                lambda x: 'Increases Risk' if x > 0 else 'Decreases Risk'
-            )
-            
-            fig_driver = px.bar(
-                driver_df, x='SHAP Value', y='Feature',
-                orientation='h', color='Direction',
-                color_discrete_map={
-                    'Increases Risk': '#d62728',
-                    'Decreases Risk': '#2ca02c'
-                },
-                title="This Customer's Risk Drivers"
-            )
-            
-            fig_driver.update_layout( # type: ignore
-                height=300, margin=dict(t=40, b=0),
-                yaxis={'categoryorder': 'total ascending'},
-                showlegend=True
-            )
-            
-            st.plotly_chart(fig_driver, use_container_width=True) # type: ignore
+                fig_driver = px.bar(
+                    driver_df, x='SHAP Value', y='Feature',
+                    orientation='h', color='Direction',
+                    color_discrete_map={
+                        'Increases Risk': '#d62728',
+                        'Decreases Risk': '#2ca02c'
+                    },
+                    title="This Customer's Risk Drivers"
+                )
+
+                fig_driver.update_layout(
+                    height=300, margin=dict(t=40, b=0),
+                    yaxis={'categoryorder': 'total ascending'},
+                    showlegend=True
+                )
+
+                st.plotly_chart(fig_driver, use_container_width=True)
+
             st.markdown("---")
             st.subheader("AI-Generated Insights")
-
-            client, churn_narrator, demand_narrator, winback_gen = load_llm_components()
 
             col_ai1, col_ai2 = st.columns(2)
 
             with col_ai1:
                 if st.button("Generate live AI explanation"):
                     with st.spinner("Generating explanation..."):
-                        feature_cols = ['Frequency', 'Monetary', 'AvgOrderValue',
-                                         'UniqueProducts', 'AvgQuantity', 'DaysActive',
-                                         'OrdersPerDay']
-                        live_explanation = churn_narrator.explain_customer(
-                            customer, customer_shap_row, feature_cols
-                        )
+                        explanation_data = api.explain_churn(selected_customer)
+                        live_explanation = explanation_data.get('explanation', 'Explanation unavailable')
                     st.success(live_explanation)
 
             with col_ai2:
                 if customer['RiskTier'] in ['⚫ Extreme Risk', '🔴 High Risk', '🟡 Medium Risk']:
                     if st.button("Generate win-back email"):
                         with st.spinner("Generating personalized win-back email..."):
-                            feature_cols = ['Frequency', 'Monetary', 'AvgOrderValue',
-                                             'UniqueProducts', 'AvgQuantity', 'DaysActive',
-                                             'OrdersPerDay']
-                            retail_df = load_retail_data()
-                            risk_table_full = load_risk_table()
-                            clv_median = risk_table_full['CLV'].median()
+                            winback = api.generate_winback(selected_customer)
 
-                            winback = winback_gen.generate_for_customer(
-                                customer, customer_shap_row, feature_cols,
-                                clv_median, retail_df
-                            )
-
-                        st.write(f"**Favorite product:** {winback['favorite_product'] or 'Unknown'}")
-                        st.write(f"**Recommended incentive:** {winback['recommended_incentive']}")
-                        st.write(f"**Urgency:** {winback['urgency']}")
-                        st.markdown(f"**Subject:** {winback['email_subject']}")
-                        st.text_area("Email body", value=winback['email_body'], height=150)
+                        st.write(f"**Favorite product:** {winback.get('favorite_product') or 'Unknown'}")
+                        st.write(f"**Recommended incentive:** {winback.get('recommended_incentive', '')}")
+                        st.write(f"**Urgency:** {winback.get('urgency', '')}")
+                        st.markdown(f"**Subject:** {winback.get('email_subject', '')}")
+                        st.text_area("Email body", value=winback.get('email_body', ''), height=150)
                 else:
                     st.caption("Win-back email available for Extreme, High, and Medium risk customers.")
-
 
 
 elif selected_tab == "AI Insights":
@@ -421,8 +398,6 @@ elif selected_tab == "AI Insights":
     st.markdown('<p class="main-header">AI Insights</p>', unsafe_allow_html=True)
     st.markdown("Ask plain-English questions about your customers and inventory.")
     st.markdown("---")
-
-    client, churn_narrator, demand_narrator, winback_gen = load_llm_components()
 
     # ── Daily briefing ───────────────────────────────────────────
     st.subheader("Today's Business Briefing")
@@ -433,20 +408,18 @@ elif selected_tab == "AI Insights":
         st.markdown("**Customer Retention Summary**")
         if st.button("Generate churn segment summaries"):
             with st.spinner("Generating customer summaries..."):
-                risk_table_ai = load_risk_table()
-                for tier in ['⚫ Extreme Risk', '🔴 High Risk', '🟡 Medium Risk', '🟢 Low Risk']:
-                    tier_df = risk_table_ai[risk_table_ai['RiskTier'] == tier]
-                    if len(tier_df) > 0:
-                        summary = churn_narrator.summarize_segment(tier, tier_df)
-                        with st.expander(tier):
-                            st.write(summary)
+                result = api.get_segment_summaries()
+                summaries = result.get('summaries', {})
+                for tier, summary in summaries.items():
+                    with st.expander(tier):
+                        st.write(strip_emoji(summary))
 
     with col_brief2:
         st.markdown("**Inventory Status Briefing**")
         if st.button("Generate daily inventory briefing"):
             with st.spinner("Generating inventory briefing..."):
-                alerts_ai = pd.read_csv('data/processed/inventory_alerts.csv')
-                briefing = demand_narrator.generate_daily_briefing(alerts_ai)
+                briefing_data = api.get_briefing()
+                briefing = briefing_data.get('inventory_briefing', 'Briefing unavailable')
             st.info(briefing)
 
     st.markdown("---")
@@ -483,12 +456,11 @@ elif selected_tab == "AI Insights":
 
     if st.button("Ask") and user_question:
         with st.spinner("Analyzing your data..."):
-            query_engine = QueryEngine(llm_client=client)
-            result = query_engine.answer(user_question)
+            result = api.query(user_question)
 
         st.markdown("**Answer:**")
-        st.success(result['answer'])
-        st.caption(f"Data source used: {result['route']}")
+        st.success(result.get('answer', 'No answer returned'))
+        st.caption(f"Data source used: {result.get('route', 'UNKNOWN')}")
 
     st.markdown("---")
 
@@ -497,11 +469,8 @@ elif selected_tab == "AI Insights":
 
     if st.button("Generate this week's demand report"):
         with st.spinner("Generating weekly report..."):
-            forecasts_ai = pd.read_csv('data/processed/all_forecasts.csv')
-            forecasts_ai['ds'] = pd.to_datetime(forecasts_ai['ds'])
-            folds_ai = pd.read_csv('data/processed/walkforward_folds.csv')
-
-            weekly_report = demand_narrator.generate_weekly_report(forecasts_ai, folds_ai)
+            report_data = api.get_weekly_report()
+            weekly_report = report_data.get('report', 'Report unavailable')
 
         st.info(weekly_report)
     
@@ -512,39 +481,34 @@ elif selected_tab == "Demand Forecast":
                 unsafe_allow_html=True)
     st.markdown("Forecast product demand with confidence intervals — "
                 "and know exactly when to reorder before stockouts happen.")
-    st.markdown("---")
+ 
+    
+    # ── Load demand data via API ────────────────────────────────
+    demand_summary = api.get_demand_summary()
+    alerts = pd.DataFrame(demand_summary.get('products', []))
 
-    @st.cache_data
-    def load_demand_data():
-        forecasts = pd.read_csv('data/processed/all_forecasts.csv')
-        forecasts['ds'] = pd.to_datetime(forecasts['ds'])
-        return forecasts
+    backtest_data = api.get_backtest_results()
+    fold_details = pd.DataFrame(backtest_data.get('fold_details', []))
+    # Rename API's snake_case fold fields back to original names used below
+    fold_rename = {
+        'stock_code': 'StockCode', 'fold': 'Fold',
+        'prophet_mae': 'Prophet_MAE', 'prophet_mape': 'Prophet_MAPE',
+        'naive_mae': 'Naive_MAE', 'seasonal_mae': 'Seasonal_MAE',
+        'beat_naive': 'BeatNaive', 'beat_seasonal': 'BeatSeasonal'
+    }
+    folds = fold_details.rename(columns=fold_rename)
+    # API already nulls out non-finite MAPE values, so drop those instead
+    # of filtering by DataQualityFlag=='OK' (that column isn't in the API response)
+    folds_ok = folds.dropna(subset=['Prophet_MAPE']).copy()
 
-    @st.cache_data
-    def load_alerts():
-        return pd.read_csv('data/processed/inventory_alerts.csv')
-
-    @st.cache_data
-    def load_folds():
-        return pd.read_csv('data/processed/walkforward_folds.csv')
-
-    @st.cache_data
-    def load_walkforward_summary():
-        return pd.read_csv('data/processed/walkforward_summary.csv')
-
-    forecasts = load_demand_data()
-    alerts = load_alerts()
-    folds = load_folds()
-    folds_ok = folds[folds['DataQualityFlag'] == 'OK'].copy()
-    wf_summary = load_walkforward_summary()
 
     col1, col2, col3, col4 = st.columns(4)
 
-    critical_count = (alerts['AlertLevel'] == 'critical').sum()
-    warning_count = (alerts['AlertLevel'] == 'warning').sum()
-    unreliable_count = (alerts['AlertLevel'] == 'unreliable').sum()
-    total_products = len(alerts)
-    avg_mape = folds_ok['Prophet_MAPE'].mean()
+    critical_count = demand_summary.get('stockout_risk_count', 0)
+    warning_count = demand_summary.get('reorder_soon_count', 0)
+    unreliable_count = demand_summary.get('unreliable_count', 0)
+    total_products = demand_summary.get('total_products', 0)
+    avg_mape = folds_ok['Prophet_MAPE'].mean() if len(folds_ok) > 0 else 0
 
     with col1:
         st.metric(label="Products Forecasted", value=f"{total_products}")
@@ -553,21 +517,24 @@ elif selected_tab == "Demand Forecast":
         st.metric(
             label="Stockout Risk",
             value=f"{critical_count}",
-            delta="Needs immediate action" if critical_count > 0 else "All clear"
+            delta="Needs immediate action" if critical_count > 0 else "All clear",
+            delta_color="off"
         )
 
     with col3:
         st.metric(
             label="Reorder Soon",
             value=f"{warning_count}",
-            delta="Order within 2 weeks" if warning_count > 0 else "All clear"
+            delta="Order within 2 weeks" if warning_count > 0 else "All clear",
+            delta_color="off"
         )
 
     with col4:
         st.metric(
             label="Avg Forecast MAPE",
             value=f"{avg_mape:.1f}%",
-            delta=f"Walk-forward, {unreliable_count} products excluded"
+            delta=f"Walk-forward, {unreliable_count} products excluded",
+            delta_color="off"
         )
 
     st.markdown("---")
@@ -587,12 +554,12 @@ elif selected_tab == "Demand Forecast":
             color_discrete_map={
                 '🔴 Stockout Risk': '#d62728',
                 '🟡 Reorder Soon': '#ff7f0e',
-                '🟣 Overstock': '#9467bd',
                 '🟢 Adequate': '#2ca02c',
                 '⚪ Unreliable Forecast': '#7f7f7f'
             },
             hole=0.4
         )
+        fig_pie.update_traces(textposition='inside', textinfo='percent')
         fig_pie.update_layout(height=300, margin=dict(t=40, b=0))
         st.plotly_chart(fig_pie, use_container_width=True)
 
@@ -638,7 +605,7 @@ elif selected_tab == "Demand Forecast":
     alert_filter = st.multiselect(
         "Filter by Alert Status",
         options=['🔴 Stockout Risk', '🟡 Reorder Soon',
-                 '🟣 Overstock', '🟢 Adequate', '⚪ Unreliable Forecast'],
+                 '🟢 Adequate', '⚪ Unreliable Forecast'],
         default=['🔴 Stockout Risk', '🟡 Reorder Soon']
     )
 
@@ -679,55 +646,64 @@ elif selected_tab == "Demand Forecast":
 
     st.subheader("Product Forecast Deep Dive")
 
-    products = forecasts['StockCode'].unique().tolist()
+    products = alerts['StockCode'].tolist()
+    product_descriptions = dict(zip(alerts['StockCode'], alerts['Description']))
 
     selected_product = st.selectbox(
         "Select a product to view forecast",
         options=products,
-        format_func=lambda x: f"{x} — "
-                               f"{forecasts[forecasts['StockCode']==x]['Description'].iloc[0][:40]}"
+        format_func=lambda x: f"{x} — {str(product_descriptions.get(x, ''))[:40]}"
     )
 
     if selected_product:
-        product_forecast = forecasts[forecasts['StockCode'] == selected_product].copy()
-        historical = product_forecast[~product_forecast['IsFuture']]
-        future = product_forecast[product_forecast['IsFuture']]
-        product_alert = alerts[alerts['StockCode'] == selected_product]
-        product_flag = product_forecast['DataQualityFlag'].iloc[0]
+        product_detail = api.get_product_detail(selected_product)
 
-        if product_flag != 'OK':
-            st.warning(f"This product is flagged as low-reliability "
-                       f"({product_flag}) — forecast shown for reference only, "
+        historical = pd.DataFrame(product_detail.get('historical', []))
+        forecast = pd.DataFrame(product_detail.get('forecast', []))
+
+        if len(historical) > 0:
+            historical['date'] = pd.to_datetime(historical['date'])
+        if len(forecast) > 0:
+            forecast['date'] = pd.to_datetime(forecast['date'])
+
+        is_unreliable = product_detail.get('alert_level') == 'unreliable'
+
+        if is_unreliable:
+            st.warning(f"This product is flagged as low-reliability — "
+                       f"forecast shown for reference only, "
                        f"not recommended for automated reorder decisions.")
 
         col_p1, col_p2 = st.columns([3, 1])
 
         with col_p1:
-            fig = go.Figure() # type: ignore
+            fig = go.Figure()
 
-            fig.add_trace(go.Scatter( # type: ignore
-                x=historical['ds'], y=historical['yhat'],
-                mode='lines', name='Historical',
-                line=dict(color='#1f77b4', width=2)
-            ))
+            if len(historical) > 0:
+                fig.add_trace(go.Scatter(
+                    x=historical['date'], y=historical['actual'],
+                    mode='lines', name='Historical',
+                    line=dict(color='#1f77b4', width=2)
+                ))
 
-            fig.add_trace(go.Scatter( # type: ignore
-                x=future['ds'], y=future['yhat'],
-                mode='lines', name='Forecast',
-                line=dict(color='#d62728', width=2, dash='dash')
-            ))
+            if len(forecast) > 0:
+                fig.add_trace(go.Scatter(
+                    x=forecast['date'], y=forecast['forecast'],
+                    mode='lines', name='Forecast',
+                    line=dict(color='#d62728', width=2, dash='dash')
+                ))
 
-            fig.add_trace(go.Scatter( # type: ignore
-                x=pd.concat([future['ds'], future['ds'][::-1]]),
-                y=pd.concat([future['yhat_upper'], future['yhat_lower'][::-1]]),
-                fill='toself', fillcolor='rgba(214,39,40,0.1)',
-                line=dict(color='rgba(255,255,255,0)'),
-                name='95% Confidence Interval'
-            ))
+                fig.add_trace(go.Scatter(
+                    x=pd.concat([forecast['date'], forecast['date'][::-1]]),
+                    y=pd.concat([forecast['upper'], forecast['lower'][::-1]]),
+                    fill='toself', fillcolor='rgba(214,39,40,0.1)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    name='95% Confidence Interval'
+                ))
 
-            last_historical = historical['ds'].max()
-            fig.add_vline(x=last_historical, line_dash='dot', line_color='gray',
-                         annotation_text='Forecast start')
+            if len(historical) > 0:
+                last_historical = historical['date'].max()
+                fig.add_vline(x=last_historical, line_dash='dot', line_color='gray',
+                             annotation_text='Forecast start')
 
             fig.update_layout(
                 title=f"Demand Forecast: {selected_product}",
@@ -740,26 +716,29 @@ elif selected_tab == "Demand Forecast":
         with col_p2:
             st.markdown("**Product Summary**")
 
-            if len(product_alert) > 0:
-                alert_row = product_alert.iloc[0]
-                st.write(f"**Status:** {alert_row['AlertStatus']}")
+            st.write(f"**Status:** {product_detail.get('alert_status', 'Unknown')}")
 
-                if alert_row['AlertLevel'] != 'unreliable':
-                    st.write(f"**Est. Stock:** {alert_row['EstimatedCurrentStock']:.0f} units")
-                    st.write(f"**3-wk Forecast:** {alert_row['ForecastedDemand_Reorder']:.0f} units")
-                    st.write(f"**Reorder Point:** {alert_row['ReorderPoint']:.0f} units")
+            if not is_unreliable:
+                st.write(f"**Est. Stock:** {product_detail.get('current_stock', 0):.0f} units")
+                st.write(f"**3-wk Forecast:** {product_detail.get('forecasted_demand_reorder', 0):.0f} units")
+                st.write(f"**Reorder Point:** {product_detail.get('reorder_point', 0):.0f} units")
 
-                    if alert_row['SuggestedReorderQty'] > 0:
-                        st.warning(f"**Reorder:** {alert_row['SuggestedReorderQty']:.0f} units")
+                if product_detail.get('suggested_reorder_qty', 0) > 0:
+                    st.warning(f"**Reorder:** {product_detail.get('suggested_reorder_qty', 0):.0f} units")
 
-                st.markdown("**Action Required:**")
-                st.info(alert_row['AlertMessage'])
+            st.markdown("**Action Required:**")
+            st.info(product_detail.get('alert_message', ''))
 
             st.markdown("**Forecast Statistics**")
             st.write(f"Next 8 weeks:")
-            st.write(f"- Min forecast: {future['yhat'].min():.0f}")
-            st.write(f"- Max forecast: {future['yhat'].max():.0f}")
-            st.write(f"- Total expected: {future['yhat'].sum():.0f}")
+            if len(forecast) > 0:
+                st.write(f"- Min forecast: {forecast['forecast'].min():.0f}")
+                st.write(f"- Max forecast: {forecast['forecast'].max():.0f}")
+                st.write(f"- Total expected: {forecast['forecast'].sum():.0f}")
+            else:
+                st.write("- No forecast data available")
+                
+                
             
     st.markdown("---")
     st.subheader("Model Validation: Walk-Forward Backtesting")
@@ -769,6 +748,15 @@ elif selected_tab == "Demand Forecast":
         "only and tests on the next 4 weeks. This mirrors real-world "
         "deployment where the model is retrained weekly."
     )
+
+    product_summary_data = backtest_data.get('product_summary', [])
+    wf_summary = pd.DataFrame(product_summary_data)
+    wf_rename = {
+        'stock_code': 'StockCode',
+        'win_rate_vs_naive': 'WinRateVsNaive',
+        'win_rate_vs_seasonal': 'WinRateVsSeasonal'
+    }
+    wf_summary = wf_summary.rename(columns=wf_rename)
 
     col_wf1, col_wf2 = st.columns(2)
 
@@ -819,8 +807,9 @@ elif selected_tab == "Demand Forecast":
     median_mape = folds_ok['Prophet_MAPE'].median()
 
     with col_b1:
-        st.metric("Win Rate vs Naive", f"{overall_win_rate:.0%}", delta="of all folds")
+        st.metric("Win Rate vs Naive", f"{overall_win_rate:.0%}", delta="of all folds", delta_color='off')
     with col_b2:
-        st.metric("Win Rate vs Seasonal", f"{overall_seasonal_win:.0%}", delta="of all folds")
+        st.metric("Win Rate vs Seasonal", f"{overall_seasonal_win:.0%}", delta="of all folds", delta_color='off')
     with col_b3:
-        st.metric("Median MAPE", f"{median_mape:.1f}%", delta="across all products and folds")          
+        st.metric("Median MAPE", f"{median_mape:.1f}%", delta="across all products and folds", delta_color='off')
+    
