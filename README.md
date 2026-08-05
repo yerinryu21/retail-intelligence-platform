@@ -719,3 +719,98 @@ Integrated the full LLM layer into the dashboard, adding AI customer explanation
 | `src/app.py` | Streamlit integration |
 
 
+## Week 7: FastAPI Backend + Full Streamlit Integration
+
+### Overview
+
+Week 7 separated the Streamlit dashboard from direct model and data access by introducing a FastAPI backend. All churn, demand, and LLM narration logic built in Weeks 2–6 was wrapped in versioned REST endpoints with Pydantic request/response validation, dependency-injected caching, and interactive Swagger documentation. The Streamlit frontend was then fully migrated to consume this API via an HTTP client rather than importing model functions or reading CSVs directly, completing the transition from a single-script prototype to a properly layered application (frontend → API → business logic → data/models).
+
+### Pipeline
+
+```text
+customer_risk_table.csv, shap_values.csv, all_forecasts.csv,
+inventory_alerts.csv, walkforward_folds.csv, walkforward_summary.csv,
+seasonality_analysis.csv, clean_retail.csv, model .pkl files
+              │
+              ▼
+   FastAPI Backend (src/api/)
+   config → dependencies (cached loaders) → services → routers
+              │
+      ┌───────┼────────┬─────────────┐
+      ▼       ▼        ▼             ▼
+  /health   /churn   /demand       /llm
+              │
+              ▼
+   RetailAPIClient (src/api_client.py)
+              │
+              ▼
+   Streamlit Dashboard (3 tabs, HTTP-driven)
+```
+
+---
+
+### Day 1 — FastAPI Skeleton
+
+**Files:** `src/api/config.py`, `src/api/dependencies.py`, `src/api/models/churn.py`, `src/api/models/demand.py`, `src/api/models/llm.py`, `src/api/routers/health.py`, `src/api/main.py`
+
+Built the FastAPI project structure, centralized configuration, Pydantic request/response models, and cached dependency loaders for all data and model files. Corrected the churn risk tier enum to the actual 4-tier system (Extreme, High, Medium, Low) and the model's real 7-feature set (no `Recency`), both verified against production data rather than assumed. Health check endpoints confirmed all models and data load correctly through the live API.
+
+---
+
+### Day 2 — Churn Prediction Endpoints
+
+**Files:** `src/api/services/churn_service.py`, `src/api/routers/churn.py`
+
+Built `/churn/summary`, `/churn/customers` (paginated, filterable), `/churn/customers/{index}`, `/churn/predict`, and `/churn/feature-importance`. Discovered and corrected a row-misalignment between `customer_risk_table.csv` and `shap_values.csv`, resolved via the `ShapRowIndex` join column rather than direct positional indexing — verified by cross-checking SHAP output against the pre-written explanation text for the same customer. Fixed a numpy int64 JSON serialization error and a Pydantic response-model type mismatch.
+
+---
+
+### Day 3 — Demand Forecasting Endpoints
+
+**Files:** `src/api/services/demand_service.py`, `src/api/routers/demand.py`
+
+Built `/demand/summary`, `/demand/alerts`, `/demand/products`, `/demand/products/{stock_code}`, and `/demand/backtest`. Confirmed all 20 tracked products exist in both `all_forecasts.csv` and `inventory_alerts.csv`, so missing-product lookups now fail loudly (404) rather than silently degrading. Fixed a NaN/Infinity JSON serialization error in aggregate backtest statistics caused by zero-demand folds, adding a `folds_with_infinite_mape` transparency field to the response.
+
+---
+
+### Day 4 — LLM Narration Endpoints
+
+**Files:** `src/api/services/llm_service.py`, `src/api/routers/llm.py`
+
+Built `/llm/explain/churn/{index}`, `/llm/winback/{index}`, `/llm/query`, `/llm/briefing`, `/llm/explain/demand/{stock_code}`, `/llm/segment-summaries`, and `/llm/weekly-report`. Verified real method signatures for `ChurnNarrator`, `DemandNarrator`, `QueryEngine`, and `WinBackGenerator` directly from source rather than assuming, uncovering that win-back generation requires a computed `clv_median` and the full retail transaction log, and that demand explanations require `trend_direction` sourced from `seasonality_analysis.csv`. All endpoints tested live against Ollama with real generated output.
+
+---
+
+### Day 5 — Streamlit Migration
+
+**Files:** `src/api_client.py`, `src/app.py`
+
+Built `RetailAPIClient`, an HTTP client wrapping every backend endpoint with error handling for connection failures, timeouts, and API errors. Migrated all three Streamlit tabs (Churn Prediction, Demand Forecast, AI Insights) from direct CSV/model access to API calls, including a full-dataset pagination helper for chart compatibility. Restored feature parity for the walk-forward per-product summary view, which had been dropped from an earlier endpoint iteration, by extending `/demand/backtest` to include `product_summary` alongside fold-level detail.
+
+---
+
+### Day 6 — Buffer, Polish, and Review
+
+Removed temporary diagnostic scripts used during data verification. Fixed emoji artifacts appearing mid-sentence in LLM-generated segment summaries and a duplicate-text rendering bug in the AI Insights tab. Disabled misleading delta-arrow coloring on KPI metrics that were not representing directional change. Verified both the API and Streamlit app start cleanly and all three tabs render without error.
+
+---
+
+### Week 7 File Summary
+
+| File | Purpose |
+|---|---|
+| `src/api/config.py` | Centralized API settings, data/model paths |
+| `src/api/dependencies.py` | Cached loaders for data, models, and LLM components |
+| `src/api/models/churn.py` | Pydantic models for churn endpoints |
+| `src/api/models/demand.py` | Pydantic models for demand endpoints |
+| `src/api/models/llm.py` | Pydantic models for LLM endpoints |
+| `src/api/services/churn_service.py` | Churn business logic, SHAP row-join handling |
+| `src/api/services/demand_service.py` | Demand business logic, forecast/alert joins |
+| `src/api/services/llm_service.py` | LLM narration business logic |
+| `src/api/routers/health.py` | Health check endpoints |
+| `src/api/routers/churn.py` | Churn prediction endpoints |
+| `src/api/routers/demand.py` | Demand forecasting endpoints |
+| `src/api/routers/llm.py` | LLM narration endpoints |
+| `src/api/main.py` | FastAPI app entry point, CORS, lifespan startup |
+| `src/api_client.py` | HTTP client for Streamlit-to-API communication |
+| `src/app.py` | Streamlit dashboard, fully API-driven |
