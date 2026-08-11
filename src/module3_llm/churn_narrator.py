@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import os
+import re
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
@@ -170,21 +171,18 @@ class ChurnNarrator:
             },
             max_words=80
         )
-
+        
     def generate_winback(self,
                           customer_row: pd.Series,
                           shap_row: pd.Series,
                           feature_cols: list,
                           risk_tier: str,
                           favorite_product: str = None) -> str:
-
         shap_df = pd.DataFrame({
             'feature': feature_cols,
             'shap_value': [shap_row.get(f'shap_{f}', 0) for f in feature_cols]
         }).sort_values('shap_value', ascending=False)
-
         primary_factor = shap_df.iloc[0]['feature'] if len(shap_df) > 0 else 'inactivity'
-
         feature_to_reason = {
             'Frequency': 'infrequent purchasing behavior',
             'Monetary': 'declining spend',
@@ -193,22 +191,60 @@ class ChurnNarrator:
             'DaysActive': 'a short purchase history so far',
             'OrdersPerDay': 'slowing purchase rate'
         }
-
         primary_reason = feature_to_reason.get(primary_factor, 'reduced engagement')
         purchase_span_label = self._purchase_span_label(customer_row.get('DaysActive', 0))
 
-        return self.client.generate_from_template(
-            CHURN_WIN_BACK_TEMPLATE,
-            {
-                'risk_tier': risk_tier,
-                'avg_order_value': customer_row.get('AvgOrderValue', 0),
-                'purchase_span_label': purchase_span_label,
-                'favorite_product': favorite_product if favorite_product else "unknown",
-                'primary_risk_factor': primary_reason
-            },
-            max_words=120
+        has_real_product = (
+            favorite_product is not None
+            and not (isinstance(favorite_product, float) and pd.isna(favorite_product))
+            and str(favorite_product).strip() != ""
+            and str(favorite_product).strip().lower() != "unknown"
         )
 
+        template_vars = {
+            'risk_tier': risk_tier,
+            'avg_order_value': customer_row.get('AvgOrderValue', 0),
+            'purchase_span_label': purchase_span_label,
+            'favorite_product': str(favorite_product) if has_real_product else "unknown",
+            'primary_risk_factor': primary_reason
+        }
+
+        result = self.client.generate_from_template(
+            CHURN_WIN_BACK_TEMPLATE, template_vars, max_words=120
+        )
+
+        hallucinated = (not has_real_product) and self._contains_hallucinated_product(result)
+
+        if hallucinated:
+            result = self.client.generate_from_template(
+                CHURN_WIN_BACK_TEMPLATE, template_vars, max_words=120
+            )
+            if self._contains_hallucinated_product(result):
+                result = self._strip_hallucinated_sentence(result)
+
+        return result
+
+    def _contains_hallucinated_product(self, text: str) -> bool:
+        """
+        Detects a likely hallucinated product reference. Product descriptions
+        in this dataset are always ALL CAPS (e.g. 'FAIRY CAKE FLANNEL
+        ASSORTED COLOUR'), so a run of 2+ consecutive all-caps words in
+        generated prose is a strong signal of a fabricated product name.
+        """
+        pattern = re.compile(r'\b[A-Z]{2,}(?:[\s,]+[A-Z]{2,}){1,}\b')
+        return bool(pattern.search(text))
+
+    def _strip_hallucinated_sentence(self, text: str) -> str:
+        """
+        Last-resort fallback: removes any sentence containing an ALL-CAPS
+        product-like phrase, so a customer never receives an email
+        referencing a product they may not have actually purchased.
+        """
+        pattern = re.compile(r'\b[A-Z]{2,}(?:[\s,]+[A-Z]{2,}){1,}\b')
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        clean_sentences = [s for s in sentences if not pattern.search(s)]
+        return ' '.join(clean_sentences).strip()
+   
     def summarize_segment(self,
                            risk_tier: str,
                            segment_df: pd.DataFrame) -> str:

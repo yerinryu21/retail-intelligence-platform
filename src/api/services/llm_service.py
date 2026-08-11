@@ -70,10 +70,12 @@ def generate_winback_message(customer_index: int,
         clv_median, retail_df
     )
 
+
     return {
         "customer_index": customer_index,
         "risk_tier": result['risk_tier'],
         "churn_probability": result['churn_probability'],
+        "favorite_product": result.get('favorite_product'),
         "explanation": result['explanation'],
         "email_subject": result['email_subject'],
         "email_body": result['email_body'],

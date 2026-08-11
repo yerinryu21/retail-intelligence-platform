@@ -41,11 +41,13 @@ class WinBackRequest(BaseModel):
         description="Index of customer in the risk table"
     )
 
+    
 class WinBackResponse(BaseModel):
     """Win-back message response"""
     customer_index: int
     risk_tier: str
     churn_probability: float
+    favorite_product: Optional[str] = None
     explanation: str
     email_subject: str
     email_body: str
