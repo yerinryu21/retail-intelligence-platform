@@ -154,7 +154,7 @@ NL_QUERY_ROUTER_TEMPLATE = """You are a data assistant that routes business ques
 
 Available data sources:
 1. CHURN — customer churn predictions, risk scores, revenue at risk
-2. DEMAND — product demand forecasts, inventory levels, reorder alerts
+2. DEMAND — product demand forecasts, inventory levels, reorder alerts, product reliability
 3. BOTH — questions that need data from both modules
 4. UNKNOWN — questions that cannot be answered with available data
 
@@ -163,49 +163,45 @@ User question: {question}
 Reply with exactly one word: CHURN, DEMAND, BOTH, or UNKNOWN.
 Nothing else."""
 
-NL_CHURN_QUERY_TEMPLATE = """You are a customer analytics assistant with access to the following data:
+NL_CHURN_QUERY_TEMPLATE = """You are a customer analytics assistant.
 
-Total customers analyzed: {total_customers}
-Extreme risk customers (churn probability over 70%): {extreme_risk_count}
-High risk customers (50-70%): {high_risk_count}
-Medium risk customers (20-50%): {medium_risk_count}
-Low risk customers (under 20%): {low_risk_count}
-Total revenue at risk: £{total_revenue_at_risk:.2f}
-Most common churn driver: {top_churn_driver}
-Average churn probability: {avg_churn_prob:.1%}
-
-Top 3 highest risk customers:
-{top_customers}
+{context}
 
 User question: {question}
 
-Answer the question in 2-3 sentences using only the data provided above.
-Be specific with numbers.
-Note: Extreme risk customers are mostly one-time buyers with no repeat-purchase history,
-so they are typically a lower retention priority than High risk customers despite the
-higher probability — mention this if relevant to the question.
-If the question cannot be answered with this data, say so clearly."""
+Present the requested list exactly as provided above, without modification, re-ordering, or filtering.
+Do not add any introductory phrases, commentary, or explanations before the list.
+Present each line identically to how it appears above, including the numbering."""
 
 
-NL_DEMAND_QUERY_TEMPLATE = """You are an inventory analytics assistant with access to the following data:
+NL_DEMAND_QUERY_TEMPLATE = """You are an inventory analytics assistant. Provide a direct, professional response based ONLY on the data below.
 
 Total products tracked: {total_products}
 Products at stockout risk: {stockout_count}
 Products needing reorder soon: {reorder_count}
-Products with unreliable forecasts (cannot be confidently planned around): {unreliable_count}
+Products with unreliable forecasts: {unreliable_count}
+Unreliable products (numbered for reference):
+{unreliable_products}
 Average forecast accuracy (MAPE): {avg_mape:.1f}%
-Total units forecasted (reorder horizon): {total_forecasted:.0f}
+Total units forecasted: {total_forecasted:.0f}
 
-Highest demand products next week:
+Highest demand products next week (already numbered in priority order):
 {top_products}
+THIS LIST IS PRE-SORTED BY FORECAST DEMAND (HIGHEST FIRST). YOU MUST PRESENT IT EXACTLY AS PROVIDED BELOW, WITHOUT CHANGING THE ORDER, ADDING, OR REMOVING ANY ITEMS.
 
-Products at stockout risk:
+Products at stockout risk (already numbered by urgency):
 {stockout_products}
+THIS LIST IS PRE-SORTED BY STOCKOUT URGENCY (LARGEST SHORTFALL FIRST). YOU MUST PRESENT IT EXACTLY AS PROVIDED BELOW, WITHOUT CHANGING THE ORDER, ADDING, OR REMOVING ANY ITEMS.
 
 User question: {question}
 
-Answer the question in 2-3 sentences using only the data provided above.
-Be specific with numbers.
-If the question is about a product with an unreliable forecast, say so and note the number
-should not be trusted for automatic decisions.
-If the question cannot be answered with this data, say so clearly."""
+MANDATORY INSTRUCTIONS:
+- Answer in exactly 2-3 professional sentences
+- Be specific with numbers from the data
+- IF QUESTION IS ABOUT TOP PRODUCTS/HIGHEST DEMAND/NEED TO BUY: COPY THE 'Highest demand products next week' SECTION EXACTLY AS PROVIDED (same items, same order, same numbers)
+- IF QUESTION IS ABOUT STOCKOUT RISKS/LOW INVENTORY/NEED TO REORDER: COPY THE 'Products at stockout risk' SECTION EXACTLY AS PROVIDED (same items, same order, same numbers)
+- IF QUESTION IS ABOUT UNRELIABLE PRODUCTS: COPY THE 'Unreliable products' SECTION EXACTLY AS PROVIDED (same items, same order, same numbers)
+- DO NOT ADD ANY INTRODUCTORY PHRASES, COMMENTARY, OR EXPLANATIONS
+- DO NOT USE EXCLAMATION POINTS OR INFORMAL LANGUAGE
+- IF THE QUESTION CANNOT BE ANSWERED, STATE: 'This question cannot be answered with the available data.'
+"""

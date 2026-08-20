@@ -128,12 +128,15 @@ class DemandNarrator:
         Generate weekly demand summary report.
         """
 
-        future = forecasts_df[forecasts_df['IsFuture'] == True].copy()
+        # Filter out unreliable products for the report
+        reliable_forecasts = forecasts_df[forecasts_df['DataQualityFlag'] == 'OK'].copy()
+
+        future = reliable_forecasts[reliable_forecasts['IsFuture'] == True].copy()
         next_week = future.groupby('StockCode').first().reset_index()
 
         total_products = len(next_week)
 
-        historical = forecasts_df[~forecasts_df['IsFuture']].copy()
+        historical = reliable_forecasts[~reliable_forecasts['IsFuture']].copy()
         last_week = historical.groupby('StockCode').last().reset_index()
 
         merged = next_week.merge(
@@ -145,11 +148,15 @@ class DemandNarrator:
         growing = (merged['WeeklyChange'] > 0).sum()
         declining = (merged['WeeklyChange'] <= 0).sum()
 
+        # Note: merged is already reliable-only because it's built from reliable_forecasts
         top_product_row = merged.nlargest(1, 'yhat').iloc[0]
         bottom_product_row = merged.nsmallest(1, 'yhat').iloc[0]
 
-        top_product = str(top_product_row.get('Description', top_product_row['StockCode']))[:40]
-        bottom_product = str(bottom_product_row.get('Description', bottom_product_row['StockCode']))[:40]
+        # Safely get description, fallback to stock code, then truncate
+        top_desc = top_product_row.get('Description', top_product_row['StockCode'])
+        bottom_desc = bottom_product_row.get('Description', bottom_product_row['StockCode'])
+        top_product = str(top_desc)[:40]
+        bottom_product = str(bottom_desc)[:40]
 
         avg_mape = folds_df['Prophet_MAPE'].mean()
 

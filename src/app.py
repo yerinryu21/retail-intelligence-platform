@@ -77,6 +77,7 @@ selected_tab = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Data Source:** UCI Online Retail (UK, 2010-2011)")
 st.sidebar.markdown("**Model:** XGBoost + SHAP")
+st.sidebar.markdown("**Model:** Prophet")
 st.sidebar.markdown("**LLM:** Ollama Llama3 (local)")
 
 
@@ -92,14 +93,6 @@ _sidebar_folds = _sidebar_folds.rename(columns={
 })
 _sidebar_folds_ok = _sidebar_folds[~_sidebar_folds['StockCode'].isin(_sidebar_unreliable)]
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Model Performance**")
-if len(_sidebar_folds_ok) > 0:
-    st.sidebar.markdown(f"Demand MAPE: {_sidebar_folds_ok['Prophet_MAPE'].median():.1f}% (median)")
-    st.sidebar.markdown(
-        f"Prophet win rate: {_sidebar_folds_ok['BeatNaive'].mean():.0%} vs naive, "
-        f"{_sidebar_folds_ok['BeatSeasonal'].mean():.0%} vs seasonal"
-    )
 
 # ══════════════════════════════════════════════════════════════════
 # TAB 1: CHURN PREDICTION
@@ -191,7 +184,7 @@ if selected_tab == "Churn Prediction":
             hole=0.4
         )
         fig_pie.update_layout(height=300, margin=dict(t=40, b=0))
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width='stretch')
 
     with col_c2:
         tier_revenue = risk_table.groupby('RiskTier')['RevenueAtRisk'].sum().reset_index()
@@ -205,7 +198,7 @@ if selected_tab == "Churn Prediction":
             height=300, margin=dict(t=40, b=0),
             showlegend=False, yaxis_title="Revenue at Risk ($)"
         )
-        st.plotly_chart(fig_revenue, use_container_width=True)
+        st.plotly_chart(fig_revenue, width='stretch')
 
     with col_c3:
         fig_hist = px.histogram(
@@ -217,7 +210,7 @@ if selected_tab == "Churn Prediction":
             height=300, margin=dict(t=40, b=0),
             xaxis_title="Churn Probability", yaxis_title="Number of Customers"
         )
-        st.plotly_chart(fig_hist, use_container_width=True)
+        st.plotly_chart(fig_hist, width='stretch')
         
     # ── Row: Feature importance + scatter ──────────────────────────
     st.markdown("---")
@@ -237,7 +230,7 @@ if selected_tab == "Churn Prediction":
             yaxis={'categoryorder': 'total ascending'},
             coloraxis_showscale=False
         )
-        st.plotly_chart(fig_shap, use_container_width=True)
+        st.plotly_chart(fig_shap, width='stretch')
 
     with col_fi2:
         fig_scatter = px.scatter(
@@ -249,7 +242,7 @@ if selected_tab == "Churn Prediction":
             labels={'DaysActive': 'Days Active', 'Monetary': 'Total Spend ($)'}
         )
         fig_scatter.update_layout(height=350, margin=dict(t=40, b=0))
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, width='stretch')
 
     # ── Row 3: Filters ─────────────────────────────────────────────
     st.subheader("Filter Customers")
@@ -304,10 +297,11 @@ if selected_tab == "Churn Prediction":
     display_df = filtered_table[list(display_cols.keys())].rename(columns=display_cols)
 
     display_df['Churn Prob.'] = display_df['Churn Prob.'].apply(lambda x: f"{x:.1%}")
-    display_df['CLV ($)'] = display_df['CLV ($)'].apply(lambda x: f"${x:,.2f}")
-    display_df['Revenue at Risk ($)'] = display_df['Revenue at Risk ($)'].apply(lambda x: f"${x:,.2f}")
+    display_df['CLV ($)'] = display_df['CLV ($)'].apply(lambda x: f"${x:,.0f}")
+    display_df['Revenue at Risk ($)'] = display_df['Revenue at Risk ($)'].apply(lambda x: f"${x:,.0f}")
+    display_df['Total Spend ($)'] = display_df['Total Spend ($)'].apply(lambda x: f"${x:,.0f}")
 
-    st.dataframe(display_df, use_container_width=True, height=400)
+    st.dataframe(display_df, width='stretch', height=400)
     csv = filtered_table.to_csv(index=False)
     st.download_button(
         label="Download filtered customer list",
@@ -320,16 +314,16 @@ if selected_tab == "Churn Prediction":
     st.markdown("---")
     st.subheader("Individual Customer Deep Dive")
 
-    selected_customer = st.selectbox(
+    selected_customer_idx = st.selectbox(
         "Select a customer to analyze",
         options=filtered_table.index.tolist(),
-        format_func=lambda x: f"Customer {x} — "
-                               f"{filtered_table.loc[x, 'RiskTier']} — "
-                               f"Prob: {filtered_table.loc[x, 'ChurnProbability']:.1%}"
+        format_func=lambda idx: f"Customer {idx} — "
+                               f"{filtered_table.loc[idx, 'RiskTier']} — "
+                               f"Prob: {filtered_table.loc[idx, 'ChurnProbability']:.1%}"
     )
 
-    if selected_customer is not None:
-        customer = filtered_table.loc[selected_customer]
+    if selected_customer_idx is not None:
+        customer = filtered_table.loc[selected_customer_idx]
 
         # ── AI Explanation — full width, standalone ─────────────
         st.markdown("**AI Explanation**")
@@ -344,7 +338,8 @@ if selected_tab == "Churn Prediction":
             st.markdown("**Primary Risk Factor**")
             st.warning(f"{customer['TopChurnDriver']} — {customer['TopDriverDirection']}")
 
-            customer_detail = api.get_customer_detail(selected_customer)
+            # Use Customer Index (0-786) for API calls - consistent with Individual Deep Dive and Churn Query
+            customer_detail = api.get_customer_detail(int(customer.name))
             top_shap_factors = customer_detail.get('top_shap_factors', [])
 
             if top_shap_factors:
@@ -370,7 +365,7 @@ if selected_tab == "Churn Prediction":
                     showlegend=True
                 )
 
-                st.plotly_chart(fig_driver, use_container_width=True)
+                st.plotly_chart(fig_driver, width='stretch')
 
         with col_d2:
             st.markdown("**Customer Profile**")
@@ -383,9 +378,9 @@ if selected_tab == "Churn Prediction":
             st.write(f"**Churn Probability:** {customer['ChurnProbability']:.1%}")
             st.write(f"**Days Active:** {customer['DaysActive']:.0f}")
             st.write(f"**Total Orders:** {customer['Frequency']:.0f}")
-            st.write(f"**Total Spend:** ${customer['Monetary']:,.2f}")
-            st.write(f"**Estimated CLV:** ${customer['CLV']:,.2f}")
-            st.write(f"**Revenue at Risk:** ${customer['RevenueAtRisk']:,.2f}")
+            st.write(f"**Total Spend:** ${customer['Monetary']:,.0f}")
+            st.write(f"**Estimated CLV:** ${customer['CLV']:,.0f}")
+            st.write(f"**Revenue at Risk:** ${customer['RevenueAtRisk']:,.0f}")
             st.write("")
             
             
@@ -398,11 +393,11 @@ if selected_tab == "Churn Prediction":
         with col_ai1:
             if st.button("Generate live AI explanation"):
                 with st.spinner("Generating explanation..."):
-                    explanation_data = api.explain_churn(selected_customer)
+                    explanation_data = api.explain_churn(customer.name)
                     st.session_state['live_explanation'] = explanation_data.get('explanation', 'Explanation unavailable')
-                    st.session_state['live_explanation_customer'] = selected_customer
+                    st.session_state['live_explanation_customer'] = customer.name
 
-            if (st.session_state.get('live_explanation_customer') == selected_customer
+            if (st.session_state.get('live_explanation_customer') == selected_customer_idx
                     and 'live_explanation' in st.session_state):
                 st.success(st.session_state['live_explanation'])
 
@@ -410,11 +405,13 @@ if selected_tab == "Churn Prediction":
             if customer['RiskTier'] in ['⚫ Extreme Risk', '🔴 High Risk', '🟡 Medium Risk']:
                 if st.button("Generate win-back email"):
                     with st.spinner("Generating personalized win-back email..."):
-                        st.session_state['winback'] = api.generate_winback(selected_customer)
-                        st.session_state['winback_customer'] = selected_customer
+                        customer_index = int(customer.name)
+                        customer_id = customer['CustomerID']
+                        st.session_state['winback'] = api.generate_winback(customer_index)
+                        st.session_state['winback_customer'] = customer_index
 
-                if (st.session_state.get('winback_customer') == selected_customer
-                        and 'winback' in st.session_state):
+                if (st.session_state.get('winback_customer') == selected_customer_idx
+                    and 'winback' in st.session_state):
                     winback = st.session_state['winback']
                     st.write(f"**Favorite product:** {winback.get('favorite_product') or 'Unknown'}")
                     st.write(f"**Recommended incentive:** {winback.get('recommended_incentive', '')}")
@@ -594,7 +591,7 @@ elif selected_tab == "Demand Forecast":
         )
         fig_pie.update_traces(textposition='inside', textinfo='percent')
         fig_pie.update_layout(height=300, margin=dict(t=40, b=0))
-        st.plotly_chart(fig_pie, use_container_width=True)
+        st.plotly_chart(fig_pie, width='stretch')
 
     with col_c2:
         reorder_products = alerts[
@@ -617,7 +614,7 @@ elif selected_tab == "Demand Forecast":
             )
             fig_reorder.update_xaxes(type='category')
             fig_reorder.update_layout(height=300, margin=dict(t=40, b=0), showlegend=False)
-            st.plotly_chart(fig_reorder, use_container_width=True)
+            st.plotly_chart(fig_reorder, width='stretch')
         else:
             st.info("No reorders currently needed")
 
@@ -629,7 +626,7 @@ elif selected_tab == "Demand Forecast":
             color_discrete_sequence=['#1f77b4']
         )
         fig_mape.update_layout(height=300, margin=dict(t=40, b=0))
-        st.plotly_chart(fig_mape, use_container_width=True)
+        st.plotly_chart(fig_mape, width='stretch')
 
     st.markdown("---")
 
@@ -665,7 +662,7 @@ elif selected_tab == "Demand Forecast":
     st.caption("Note: Current Stock is a synthetic estimate — no real inventory "
                "data exists in this dataset.")
 
-    st.dataframe(display_alerts, use_container_width=True, height=350)
+    st.dataframe(display_alerts, width='stretch', height=350)
 
     csv = filtered_alerts.to_csv(index=False)
     st.download_button(
@@ -699,6 +696,7 @@ elif selected_tab == "Demand Forecast":
         if len(forecast) > 0:
             forecast['date'] = pd.to_datetime(forecast['date'])
 
+        
         is_unreliable = product_detail.get('alert_level') == 'unreliable'
 
         if is_unreliable:
@@ -733,7 +731,9 @@ elif selected_tab == "Demand Forecast":
 
         if len(historical) > 0:
             last_historical = historical['date'].max()
-            fig.add_vline(x=last_historical, line_dash='dot', line_color='gray',
+            # Convert Timestamp to milliseconds since epoch for Plotly vline
+            last_historical_ms = last_historical.timestamp() * 1000
+            fig.add_vline(x=last_historical_ms, line_dash='dot', line_color='gray',
                          annotation_text='Forecast start')
 
         fig.update_layout(
@@ -742,7 +742,7 @@ elif selected_tab == "Demand Forecast":
             legend=dict(orientation='h', yanchor='bottom', y=1.02)
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         st.markdown("---")
 
@@ -753,10 +753,10 @@ elif selected_tab == "Demand Forecast":
             st.write(f"**Status:** {product_detail.get('alert_status', 'Unknown')}")
 
             if not is_unreliable:
-                st.write(f"**Est. Stock:** {product_detail.get('current_stock', 0):.0f} units")
-                st.write(f"**Lead-time Forecast:** {product_detail.get('forecasted_demand_lead', 0):.0f} units")
-                st.write(f"**3-wk (Reorder-cycle) Forecast:** {product_detail.get('forecasted_demand_reorder', 0):.0f} units")
-                st.write(f"**Safety Stock Buffer:** {product_detail.get('safety_stock', 0):.0f} units")
+                st.write(f"**Current Stock:** {product_detail.get('current_stock', 0):.0f} units")
+                st.write(f"**Lead-Time Forecast:** {product_detail.get('forecasted_demand_lead', 0):.0f} units")
+                st.write(f"**Reorder-Cycle Forecast:** {product_detail.get('forecasted_demand_reorder', 0):.0f} units")
+                st.write(f"**Safety Stock:** {product_detail.get('safety_stock', 0):.0f} units")
                 st.write(f"**Reorder Point:** {product_detail.get('reorder_point', 0):.0f} units "
                           f"*(= lead-time forecast + safety stock)*")
 
@@ -817,7 +817,7 @@ elif selected_tab == "Demand Forecast":
             yaxis=dict(tickformat='.0%', dtick=0.1, range=[0, 0.9]),
             xaxis_tickangle=-45, bargap=0.1
         )
-        st.plotly_chart(fig_win, use_container_width=True)
+        st.plotly_chart(fig_win, width='stretch')
         
         
     with col_wf2:
@@ -847,7 +847,7 @@ elif selected_tab == "Demand Forecast":
             yaxis=dict(title='Mean Absolute Error (units)', dtick=100, range=[0, 600]),
             bargap=0.5
         )
-        st.plotly_chart(fig_mae, use_container_width=True)
+        st.plotly_chart(fig_mae, width='stretch')
 
     col_b1, col_b2, col_b3 = st.columns(3)
 
@@ -856,9 +856,9 @@ elif selected_tab == "Demand Forecast":
     median_mape = folds_ok['Prophet_MAPE'].median()
 
     with col_b1:
-        st.metric("Win Rate vs Naive", f"{overall_win_rate:.0%}", delta="of all folds", delta_color='off')
+        st.metric("Win Rate vs Naive", f"{overall_win_rate:.1%}", delta="of all folds", delta_color='off')
     with col_b2:
-        st.metric("Win Rate vs Seasonal", f"{overall_seasonal_win:.0%}", delta="of all folds", delta_color='off')
+        st.metric("Win Rate vs Seasonal", f"{overall_seasonal_win:.1%}", delta="of all folds", delta_color='off')
     with col_b3:
         st.metric("Median MAPE", f"{median_mape:.1f}%", delta="across all products and folds", delta_color='off')
     

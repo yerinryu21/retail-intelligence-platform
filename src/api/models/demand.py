@@ -51,3 +51,36 @@ class ForecastTimeSeriesResponse(BaseModel):
     historical: List[Dict]
     forecast: List[Dict]
     model_metrics: Dict
+
+class ProductDetailResponse(BaseModel):
+    """Complete product detail including forecast, alerts, and inventory"""
+    stock_code: str
+    description: str
+    historical: List[Dict]
+    forecast: List[Dict]
+    model_metrics: Dict
+    alert_status: str
+    alert_level: str
+    alert_message: str
+    current_stock: float
+    suggested_reorder_qty: float
+    reorder_point: float
+    safety_stock: float
+    forecasted_demand_reorder: float
+    demand_lower_reorder: float
+    demand_upper_reorder: float
+    forecasted_demand_lead: float
+    demand_upper_lead: float
+    urgency_rank: Optional[int] = None
+
+class AlertsSummaryResponse(BaseModel):
+    """Summary of inventory alerts"""
+    total: int
+    critical: int
+    warning: int
+    alerts: List[Dict]
+
+class ProductListResponse(BaseModel):
+    """List of tracked products"""
+    total_products: int
+    products: List[Dict]

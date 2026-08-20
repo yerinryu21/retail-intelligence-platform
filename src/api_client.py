@@ -7,7 +7,6 @@ instead of importing and calling model/data functions directly.
 
 import requests
 import pandas as pd
-import streamlit as st
 from typing import Dict, Optional
 
 API_BASE_URL = "http://localhost:8000"

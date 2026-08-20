@@ -25,10 +25,17 @@ from src.api.services.demand_service import (
     get_demand_summary, get_product_forecast
 )
 
+from src.api.models.demand import (
+    DemandSummaryResponse,
+    AlertsSummaryResponse,
+    ProductListResponse,
+    ProductDetailResponse
+)
+
 router = APIRouter(prefix="/demand", tags=["Demand Forecasting"])
 
 
-@router.get("/summary")
+@router.get("/summary", response_model=DemandSummaryResponse)
 async def get_summary():
     """Get demand and inventory overview statistics."""
     alerts = get_alerts()
@@ -36,7 +43,7 @@ async def get_summary():
     return get_demand_summary(alerts, folds)
 
 
-@router.get("/alerts")
+@router.get("/alerts", response_model=AlertsSummaryResponse)
 async def get_alerts_list(
     alert_level: Optional[str] = Query(
         None,
@@ -77,7 +84,7 @@ async def get_alerts_list(
     }
 
 
-@router.get("/products")
+@router.get("/products", response_model=ProductListResponse)
 async def get_products():
     """List all products being tracked with their current alert status."""
 
@@ -100,7 +107,7 @@ async def get_products():
     }
 
 
-@router.get("/products/{stock_code}")
+@router.get("/products/{stock_code}", response_model=ProductDetailResponse)
 async def get_product_detail(stock_code: str):
     """
     Get complete forecast detail for a specific product.
